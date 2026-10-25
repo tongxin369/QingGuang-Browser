@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.qingguang.browser.App
 import com.qingguang.browser.BuildConfig
+import com.qingguang.browser.ui.theme.ThemeController
 import com.qingguang.browser.util.BackupInfo
 import com.qingguang.browser.util.BackupManager
 import com.qingguang.browser.web.BrowserController
@@ -92,7 +93,7 @@ fun OverlayPageHost(
                 OverlayPage.BOOKMARKS -> BookmarksPage(controller, onClose)
                 OverlayPage.HISTORY -> HistoryPage(controller, onClose)
                 OverlayPage.DOWNLOADS -> DownloadsPage()
-                OverlayPage.BACKUPS -> BackupsPage(controller)
+                OverlayPage.DATA_BACKUPS -> BackupsPage(controller)
                 OverlayPage.SETTINGS -> SettingsPage(controller)
             }
         }
@@ -265,9 +266,22 @@ private fun BackupsPage(controller: BrowserController) {
     var pendingRestore by remember { mutableStateOf<BackupInfo?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var autoBackup by remember { mutableStateOf(app.settings.autoBackup) }
+    var locationLabel by remember { mutableStateOf(app.backups.locationLabel()) }
+    var usesCustom by remember { mutableStateOf(app.backups.usesCustomDir) }
 
     fun refreshList() {
         scope.launch { backups = app.backups.listBackups() }
+        locationLabel = app.backups.locationLabel()
+        usesCustom = app.backups.usesCustomDir
+    }
+
+    val dirLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            message = if (app.backups.setCustomDir(uri)) "已切换备份目录" else "无法获取该目录写入权限"
+            refreshList()
+        }
     }
 
     LaunchedEffect(Unit) { backups = app.backups.listBackups() }
@@ -276,11 +290,27 @@ private fun BackupsPage(controller: BrowserController) {
         Column(Modifier.padding(horizontal = 20.dp)) {
             Text("备份目录", fontSize = 13.sp, fontWeight = FontWeight.Medium)
             Text(
-                app.backups.backupDir.absolutePath,
+                locationLabel,
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Spacer(Modifier.height(10.dp))
+            Row(Modifier.padding(top = 4.dp)) {
+                TextButton(
+                    onClick = { dirLauncher.launch(null) },
+                    contentPadding = PaddingValues(horizontal = 4.dp)
+                ) { Text("选择目录", fontSize = 13.sp) }
+                if (usesCustom) {
+                    TextButton(
+                        onClick = {
+                            app.backups.resetToDefault()
+                            refreshList()
+                            message = "已恢复应用私有备份目录"
+                        },
+                        contentPadding = PaddingValues(horizontal = 4.dp)
+                    ) { Text("恢复默认", fontSize = 13.sp) }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
             Button(
                 onClick = {
                     controller.backupCurrent { success, msg ->
@@ -336,7 +366,7 @@ private fun BackupsPage(controller: BrowserController) {
                 Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 24.dp)
             ) {
-                items(backups, key = { it.file.absolutePath }) { info ->
+                items(backups, key = { it.name }) { info ->
                     ListItem(
                         headlineContent = { Text(info.host, maxLines = 1) },
                         supportingContent = {
@@ -415,6 +445,8 @@ private fun SettingsPage(controller: BrowserController) {
     var darkMode by remember { mutableStateOf(app.settings.darkMode) }
     var autoBackup by remember { mutableStateOf(app.settings.autoBackup) }
     var confirmClearData by remember { mutableStateOf(false) }
+    var appTheme by remember { mutableStateOf(ThemeController.mode) }
+    var followPageTheme by remember { mutableStateOf(controller.followPageTheme) }
 
     Column(
         Modifier
@@ -422,6 +454,45 @@ private fun SettingsPage(controller: BrowserController) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 8.dp)
     ) {
+        SectionTitle("界面外观")
+        listOf(
+            0 to "跟随系统",
+            1 to "浅色",
+            2 to "深色"
+        ).forEach { (value, label) ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        appTheme = value
+                        ThemeController.set(context, value)
+                    }
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RadioButton(
+                    selected = appTheme == value,
+                    onClick = {
+                        appTheme = value
+                        ThemeController.set(context, value)
+                    }
+                )
+                Text(label, fontSize = 14.sp)
+            }
+        }
+
+        SettingSwitchRow(
+            title = "顶/底栏跟随网页主题色",
+            subtitle = "取网页 theme-color 或页面背景色，关闭后使用应用配色",
+            checked = followPageTheme,
+            onCheckedChange = {
+                followPageTheme = it
+                controller.applyFollowPageTheme(it)
+            }
+        )
+
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
         SectionTitle("搜索引擎")
         listOf(
             "Bing" to "https://www.bing.com/search?q=%s",
@@ -571,7 +642,12 @@ private fun SettingsPage(controller: BrowserController) {
 
         SectionTitle("备份目录")
         Text(
-            app.backups.backupDir.absolutePath,
+            app.backups.locationLabel(),
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            "在「数据备份」页面可以选择自定义目录",
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

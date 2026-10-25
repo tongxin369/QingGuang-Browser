@@ -32,12 +32,30 @@ class SettingsStore(context: Context) {
         get() = prefs.getInt(KEY_DARK_MODE, 0)
         set(value) = prefs.edit().putInt(KEY_DARK_MODE, value).apply()
 
+    /** 应用界面外观：0 跟随系统，1 浅色，2 深色 */
+    var appTheme: Int
+        get() = prefs.getInt(KEY_APP_THEME, 0)
+        set(value) = prefs.edit().putInt(KEY_APP_THEME, value).apply()
+
+    /** 顶部地址栏与底部功能栏是否跟随网页主题色 */
+    var followPageTheme: Boolean
+        get() = prefs.getBoolean(KEY_FOLLOW_PAGE_THEME, true)
+        set(value) = prefs.edit().putBoolean(KEY_FOLLOW_PAGE_THEME, value).apply()
+
+    /** 自定义备份目录（SAF tree uri）；为空表示使用应用私有目录 */
+    var backupTreeUri: String?
+        get() = prefs.getString(KEY_BACKUP_TREE_URI, null)
+        set(value) = prefs.edit().putString(KEY_BACKUP_TREE_URI, value).apply()
+
     companion object {
         private const val KEY_SEARCH_ENGINE = "search_engine"
         private const val KEY_AUTO_BACKUP = "auto_backup"
         private const val KEY_TEXT_ZOOM = "text_zoom"
         private const val KEY_DESKTOP_MODE = "desktop_mode"
         private const val KEY_DARK_MODE = "dark_mode"
+        private const val KEY_APP_THEME = "app_theme"
+        private const val KEY_FOLLOW_PAGE_THEME = "follow_page_theme"
+        private const val KEY_BACKUP_TREE_URI = "backup_tree_uri"
 
         const val DEFAULT_SEARCH_ENGINE = "https://www.bing.com/search?q=%s"
         const val DESKTOP_UA =

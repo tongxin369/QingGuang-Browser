@@ -1,52 +1,109 @@
 package com.qingguang.browser.util
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.webkit.CookieManager
 import android.webkit.WebView
-import com.google.gson.Gson
-import com.google.gson.JsonObject
-import com.google.gson.JsonParser
+import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import org.json.JSONTokener
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 data class BackupInfo(
-    val file: File,
+    val name: String,
     val host: String,
     val createdAt: Long,
-    val sizeBytes: Long
+    val sizeBytes: Long,
+    /** 私有目录备份时有值 */
+    val file: File? = null,
+    /** 自定义 SAF 目录备份时有值 */
+    val uri: Uri? = null
 )
 
 /**
  * 站点数据备份。
- * MVP 备份内容：Cookie + localStorage（IndexedDB 体积大且导出复杂，后续版本补充）。
- * 备份文件保存在应用私有目录，路径可直接查看；同一站点只保留最新一份，旧文件自动删除。
+ * 备份内容：Cookie + localStorage（IndexedDB 体积大且导出复杂，后续版本补充）。
+ * 备份目录可以是应用私有目录（默认），也可以是用户通过 SAF 指定的任意文件夹。
+ * 同一站点只保留最新一份，旧文件自动删除。
  */
-class BackupManager(private val context: Context) {
+class BackupManager(
+    private val context: Context,
+    private val settings: SettingsStore
+) {
 
-    private val gson = Gson()
-
-    val backupDir: File
+    val defaultDir: File
         get() = File(context.filesDir, "backups").apply { mkdirs() }
 
+    /** 是否使用用户自定义目录 */
+    val usesCustomDir: Boolean
+        get() = customRoot() != null
+
+    /** 当前备份目录的可读描述 */
+    fun locationLabel(): String {
+        val root = customRoot() ?: return defaultDir.absolutePath
+        return runCatching { Uri.decode(root.uri.toString()) }.getOrDefault(root.uri.toString())
+    }
+
+    /** 设置自定义备份目录并持久化读取权限 */
+    fun setCustomDir(uri: Uri): Boolean = runCatching {
+        context.contentResolver.takePersistableUriPermission(
+            uri,
+            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        )
+    }.isSuccess.also { ok ->
+        if (ok) settings.backupTreeUri = uri.toString()
+    }
+
+    /** 恢复为应用私有目录 */
+    fun resetToDefault() {
+        settings.backupTreeUri = null
+    }
+
+    private fun customRoot(): DocumentFile? {
+        val raw = settings.backupTreeUri ?: return null
+        val tree = DocumentFile.fromTreeUri(context, Uri.parse(raw)) ?: return null
+        return tree.takeIf { it.exists() && it.canWrite() }
+    }
+
     suspend fun listBackups(): List<BackupInfo> = withContext(Dispatchers.IO) {
-        backupDir.listFiles()
-            ?.filter { it.isFile && it.extension == "json" }
-            ?.map {
-                val parts = it.nameWithoutExtension.split("@")
-                BackupInfo(
-                    file = it,
-                    host = parts.firstOrNull() ?: it.nameWithoutExtension,
-                    createdAt = parts.getOrNull(1)?.toLongOrNull() ?: it.lastModified(),
-                    sizeBytes = it.length()
-                )
-            }
-            ?.sortedByDescending { it.createdAt }
-            ?: emptyList()
+        val root = customRoot()
+        if (root != null) {
+            root.listFiles()
+                .filter { it.isFile && it.name?.endsWith(".json") == true }
+                .map { doc ->
+                    val name = doc.name ?: ""
+                    val parts = name.removeSuffix(".json").split("@")
+                    BackupInfo(
+                        name = name,
+                        host = parts.firstOrNull().orEmpty().ifBlank { name },
+                        createdAt = parts.getOrNull(1)?.toLongOrNull() ?: doc.lastModified(),
+                        sizeBytes = doc.length(),
+                        uri = doc.uri
+                    )
+                }
+                .sortedByDescending { it.createdAt }
+        } else {
+            defaultDir.listFiles()
+                ?.filter { it.isFile && it.extension == "json" }
+                ?.map {
+                    val parts = it.nameWithoutExtension.split("@")
+                    BackupInfo(
+                        name = it.name,
+                        host = parts.firstOrNull() ?: it.nameWithoutExtension,
+                        createdAt = parts.getOrNull(1)?.toLongOrNull() ?: it.lastModified(),
+                        sizeBytes = it.length(),
+                        file = it
+                    )
+                }
+                ?.sortedByDescending { it.createdAt }
+                ?: emptyList()
+        }
     }
 
     /** 导出当前页面的 Cookie 与 localStorage。回调在主线程。 */
@@ -59,46 +116,62 @@ class BackupManager(private val context: Context) {
         webView.evaluateJavascript(EXPORT_LOCAL_STORAGE_JS) { raw ->
             val localStorageJson = decodeJsString(raw) ?: "{}"
             val host = Uri.parse(url).host ?: "local"
-            val cookies = CookieManager.getInstance().getCookie(url) ?: ""
-            val payload = JsonObject().apply {
-                addProperty("version", 1)
-                addProperty("url", url)
-                addProperty("host", host)
-                addProperty("title", title)
-                addProperty("createdAt", System.currentTimeMillis())
-                addProperty("cookies", cookies)
-                add("localStorage", runCatching { JsonParser.parseString(localStorageJson) }.getOrElse { JsonObject() })
-            }
             val safeHost = host.replace(Regex("[^A-Za-z0-9.-]"), "_")
-            val fileName = "${safeHost}@${System.currentTimeMillis()}.json"
+            val now = System.currentTimeMillis()
+            val fileName = "$safeHost@$now.json"
+            val payload = JSONObject().apply {
+                put("version", 1)
+                put("url", url)
+                put("host", host)
+                put("title", title)
+                put("createdAt", now)
+                put("cookies", CookieManager.getInstance().getCookie(url) ?: "")
+                put("localStorage", runCatching { JSONObject(localStorageJson) }.getOrElse { JSONObject() })
+            }
             runCatching {
-                File(backupDir, fileName).writeText(gson.toJson(payload), Charsets.UTF_8)
-                // 同一站点只保留最新一份
-                backupDir.listFiles()?.filter {
-                    it.isFile && it.name.endsWith(".json") &&
-                        (it.nameWithoutExtension.split("@").firstOrNull() == safeHost) &&
-                        it.name != fileName
-                }?.forEach { it.delete() }
+                val root = customRoot()
+                if (root != null) {
+                    val target = root.findFile(fileName)
+                        ?: root.createFile("application/json", fileName)
+                        ?: error("无法在所选目录创建文件")
+                    context.contentResolver.openOutputStream(target.uri)?.use {
+                        it.write(payload.toString().toByteArray(Charsets.UTF_8))
+                    } ?: error("无法写入所选目录")
+                    root.listFiles()
+                        .filter {
+                            it.isFile && it.name?.endsWith(".json") == true &&
+                                it.name != fileName &&
+                                it.name?.substringBefore("@") == safeHost
+                        }
+                        .forEach { it.delete() }
+                } else {
+                    val dir = defaultDir
+                    File(dir, fileName).writeText(payload.toString(), Charsets.UTF_8)
+                    dir.listFiles()?.filter {
+                        it.isFile && it.name.endsWith(".json") &&
+                            it.nameWithoutExtension.split("@").firstOrNull() == safeHost &&
+                            it.name != fileName
+                    }?.forEach { it.delete() }
+                }
             }.onSuccess {
-                onResult(true, "已备份到 ${backupDir.absolutePath}/$fileName")
+                onResult(true, "已备份到 ${locationLabel()} 下的 $fileName")
             }.onFailure {
                 onResult(false, "备份失败：${it.message}")
             }
         }
     }
 
-    /** 从备份文件恢复 Cookie 与 localStorage 到指定 WebView。回调在主线程。 */
+    /** 从备份恢复 Cookie 与 localStorage 到指定 WebView。回调在主线程。 */
     fun restore(webView: WebView, info: BackupInfo, onResult: (Boolean, String) -> Unit) {
-        val payload = runCatching {
-            JsonParser.parseString(info.file.readText(Charsets.UTF_8)).asJsonObject
-        }.getOrNull()
+        val text = runCatching { readText(info) }.getOrNull()
+        val payload = text?.let { runCatching { JSONObject(it) }.getOrNull() }
         if (payload == null) {
-            onResult(false, "备份文件已损坏")
+            onResult(false, "备份文件已损坏或无法读取")
             return
         }
-        val url = payload.get("url")?.asString ?: ""
-        val cookies = payload.get("cookies")?.asString ?: ""
-        val localStorage = payload.get("localStorage")?.toString() ?: "{}"
+        val url = payload.optString("url")
+        val cookies = payload.optString("cookies")
+        val localStorage = payload.optJSONObject("localStorage")?.toString() ?: "{}"
 
         if (cookies.isNotBlank()) {
             val cookieManager = CookieManager.getInstance()
@@ -109,19 +182,33 @@ class BackupManager(private val context: Context) {
             cookieManager.flush()
         }
 
-        val script = RESTORE_LOCAL_STORAGE_JS.replace("__DATA__", gson.toJson(localStorage))
+        val script = RESTORE_LOCAL_STORAGE_JS.replace("__DATA__", JSONObject.quote(localStorage))
         webView.evaluateJavascript(script) { result ->
             webView.reload()
             onResult(true, if (result.contains("ok")) "已恢复并刷新页面" else "已写入数据并刷新页面")
         }
     }
 
-    fun delete(info: BackupInfo): Boolean = info.file.delete()
+    fun delete(info: BackupInfo): Boolean = runCatching {
+        if (info.uri != null) {
+            DocumentFile.fromSingleUri(context, info.uri)?.delete() == true
+        } else {
+            info.file?.delete() == true
+        }
+    }.getOrDefault(false)
+
+    private fun readText(info: BackupInfo): String {
+        if (info.uri != null) {
+            return context.contentResolver.openInputStream(info.uri)?.bufferedReader()?.use { it.readText() }
+                ?: error("无法读取备份文件")
+        }
+        return info.file?.readText(Charsets.UTF_8) ?: error("备份文件不存在")
+    }
 
     /** evaluateJavascript 返回的是被 JSON 编码过的字符串，这里解出原始字符串 */
     private fun decodeJsString(raw: String?): String? {
         if (raw == null || raw == "null") return null
-        return runCatching { gson.fromJson(raw, String::class.java) }.getOrNull()
+        return runCatching { JSONTokener(raw).nextValue() as? String }.getOrNull()
     }
 
     companion object {

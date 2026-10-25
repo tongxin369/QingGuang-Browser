@@ -6,6 +6,8 @@ import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,15 +32,15 @@ import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -50,6 +52,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -114,129 +117,150 @@ fun HomePage(
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         LazyColumn(
             Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 28.dp)
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 20.dp)
         ) {
             item {
                 Row(
                     Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "轻光浏览器",
-                            fontSize = 26.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
-                        Text(
-                            "网页数据留在设备上，随时可查、可备份",
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Text(
+                        "轻光",
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier.weight(1f)
+                    )
                     IconButton(onClick = { onOpenOverlay(OverlayPage.SETTINGS) }) {
-                        Icon(Icons.Filled.Settings, contentDescription = "设置")
+                        Icon(
+                            Icons.Filled.Settings,
+                            contentDescription = "设置",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(21.dp)
+                        )
                     }
                 }
 
-                Spacer(Modifier.height(24.dp))
+                Spacer(Modifier.height(18.dp))
 
+                // Via 风格的白色圆角搜索框：细边框、无填充
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(52.dp),
-                    shape = RoundedCornerShape(26.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    BasicTextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        singleLine = true,
-                        textStyle = LocalTextStyle.current.copy(
-                            fontSize = 15.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        .height(48.dp)
+                        .border(
+                            1.dp,
+                            MaterialTheme.colorScheme.outline,
+                            RoundedCornerShape(24.dp)
                         ),
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = {
-                            if (query.isNotBlank()) {
-                                controller.submitInput(query)
-                                query = ""
-                            }
-                        }),
-                        modifier = Modifier
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surface
+                ) {
+                    Row(
+                        Modifier
                             .fillMaxSize()
-                            .padding(horizontal = 18.dp),
-                        decorationBox = { inner ->
-                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) {
-                                if (query.isBlank()) {
-                                    Text(
-                                        "搜索或输入网址",
-                                        fontSize = 15.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                                    )
+                            .padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Filled.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(19.dp)
+                        )
+                        Spacer(Modifier.size(10.dp))
+                        BasicTextField(
+                            value = query,
+                            onValueChange = { query = it },
+                            singleLine = true,
+                            textStyle = LocalTextStyle.current.copy(
+                                fontSize = 15.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.secondary),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                            keyboardActions = KeyboardActions(onSearch = {
+                                if (query.isNotBlank()) {
+                                    controller.submitInput(query)
+                                    query = ""
                                 }
-                                inner()
+                            }),
+                            modifier = Modifier.fillMaxSize(),
+                            decorationBox = { inner ->
+                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) {
+                                    if (query.isBlank()) {
+                                        Text(
+                                            "搜索或输入网址",
+                                            fontSize = 15.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                        )
+                                    }
+                                    inner()
+                                }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
 
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(22.dp))
 
-                Row(Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
                     QuickEntry(
-                        modifier = Modifier.weight(1f),
                         label = "书签",
                         icon = Icons.Filled.BookmarkBorder,
-                        onClick = { onOpenOverlay(OverlayPage.BOOKMARKS) }
-                    )
+                        color = Color(0xFF5B8C5A)
+                    ) { onOpenOverlay(OverlayPage.BOOKMARKS) }
                     QuickEntry(
-                        modifier = Modifier.weight(1f),
                         label = "历史",
                         icon = Icons.Filled.History,
-                        onClick = { onOpenOverlay(OverlayPage.HISTORY) }
-                    )
+                        color = Color(0xFF8E5A6E)
+                    ) { onOpenOverlay(OverlayPage.HISTORY) }
                     QuickEntry(
-                        modifier = Modifier.weight(1f),
                         label = "下载",
                         icon = Icons.Filled.Download,
-                        onClick = { onOpenOverlay(OverlayPage.DOWNLOADS) }
-                    )
+                        color = Color(0xFF4A6FA5)
+                    ) { onOpenOverlay(OverlayPage.DOWNLOADS) }
                     QuickEntry(
-                        modifier = Modifier.weight(1f),
                         label = "备份",
                         icon = Icons.Filled.Backup,
-                        onClick = { onOpenOverlay(OverlayPage.BACKUPS) }
+                        color = Color(0xFF6C4BD8)
+                    ) { onOpenOverlay(OverlayPage.DATA_BACKUPS) }
+                    QuickEntry(
+                        label = "本地网页",
+                        icon = Icons.Filled.FolderOpen,
+                        color = Color(0xFFC7A34A)
+                    ) { openFileLauncher.launch(arrayOf("*/*")) }
+                }
+
+                Spacer(Modifier.height(26.dp))
+
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "本地网页",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier.weight(1f)
                     )
-                }
-
-                Spacer(Modifier.height(24.dp))
-
-                Text(
-                    "本地网页",
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Spacer(Modifier.height(8.dp))
-
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedButton(
-                        onClick = { openFileLauncher.launch(arrayOf("*/*")) },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("打开 HTML 文件") }
-                    OutlinedButton(
-                        onClick = { openTreeLauncher.launch(null) },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("打开文件夹") }
+                    TextButton(onClick = { openFileLauncher.launch(arrayOf("*/*")) }) {
+                        Text("打开文件", fontSize = 13.sp)
+                    }
+                    TextButton(onClick = { openTreeLauncher.launch(null) }) {
+                        Text("打开文件夹", fontSize = 13.sp)
+                    }
                 }
 
                 Text(
-                    "提示：单个 HTML 文件只复制文件本身；如果页面还用到 CSS/JS/图片，请选择整个文件夹导入，相对路径才能正常加载。",
-                    fontSize = 12.sp,
+                    "单个 HTML 只复制文件本身；若页面用到 CSS/JS/图片，请导入整个文件夹，相对路径才能正常加载。",
+                    fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 8.dp)
+                    modifier = Modifier.padding(bottom = 6.dp)
                 )
 
                 TextButton(
@@ -244,63 +268,75 @@ fun HomePage(
                         controller.loadUrl(
                             LocalSiteManager.ASSET_HOST + "/assets/sample/index.html"
                         )
-                    }
-                ) { Text("打开内置示例网页（可测试数据保存与定位）") }
+                    },
+                    contentPadding = PaddingValues(0.dp)
+                ) { Text("打开内置示例网页", fontSize = 13.sp) }
 
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(6.dp))
             }
 
             if (localPages.isEmpty()) {
                 item {
                     Text(
                         "还没有导入本地网页。导入后地址会被记住，下次直接从下面打开。",
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(vertical = 12.dp)
+                        modifier = Modifier.padding(vertical = 10.dp)
                     )
                 }
             } else {
                 items(localPages, key = { it.siteId }) { page ->
-                    ListItem(
-                        headlineContent = {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                scope.launch {
+                                    app.database.localPageDao()
+                                        .touch(page.siteId, System.currentTimeMillis())
+                                    controller.loadUrl(page.entryUrl)
+                                }
+                            }
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            Modifier
+                                .size(34.dp)
+                                .background(Color(0xFF4A6FA5), RoundedCornerShape(10.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                page.displayName.take(1).uppercase(),
+                                fontSize = 14.sp,
+                                color = Color.White
+                            )
+                        }
+                        Spacer(Modifier.size(12.dp))
+                        Column(Modifier.weight(1f)) {
                             Text(
                                 page.displayName,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        },
-                        supportingContent = {
-                            Text(
-                                page.entryUrl,
+                                fontSize = 14.sp,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                fontSize = 11.sp
+                                color = MaterialTheme.colorScheme.onSurface
                             )
-                        },
-                        leadingContent = {
-                            Box(
-                                Modifier.size(36.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    Icons.Filled.BookmarkBorder,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        },
-                        trailingContent = {
-                            IconButton(onClick = { pendingDelete = page }) {
-                                Icon(Icons.Filled.Close, contentDescription = "删除记录")
-                            }
-                        },
-                        modifier = Modifier.clickable {
-                            scope.launch {
-                                app.database.localPageDao().touch(page.siteId, System.currentTimeMillis())
-                                controller.loadUrl(page.entryUrl)
-                            }
+                            Text(
+                                page.entryUrl,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                    )
+                        IconButton(onClick = { pendingDelete = page }, modifier = Modifier.size(32.dp)) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "删除记录",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -329,32 +365,36 @@ fun HomePage(
 
 @Composable
 private fun QuickEntry(
-    modifier: Modifier,
     label: String,
     icon: ImageVector,
+    color: Color,
     onClick: () -> Unit
 ) {
     Column(
-        modifier = modifier
+        modifier = Modifier
             .clickable(onClick = onClick)
-            .padding(vertical = 14.dp),
+            .padding(vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.primaryContainer,
-            modifier = Modifier.size(44.dp)
+        Box(
+            Modifier
+                .size(46.dp)
+                .background(color, CircleShape),
+            contentAlignment = Alignment.Center
         ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    icon,
-                    contentDescription = label,
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-            }
+            Icon(
+                icon,
+                contentDescription = label,
+                tint = Color.White,
+                modifier = Modifier.size(21.dp)
+            )
         }
-        Spacer(Modifier.height(6.dp))
-        Text(label, fontSize = 12.sp)
+        Spacer(Modifier.height(7.dp))
+        Text(
+            label,
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

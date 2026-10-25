@@ -11,7 +11,7 @@ class App : Application() {
     val database: AppDatabase by lazy { AppDatabase.get(this) }
     val settings: SettingsStore by lazy { SettingsStore(this) }
     val localSites: LocalSiteManager by lazy { LocalSiteManager(this) }
-    val backups: BackupManager by lazy { BackupManager(this) }
+    val backups: BackupManager by lazy { BackupManager(this, settings) }
 
     override fun onCreate() {
         super.onCreate()

@@ -12,6 +12,7 @@ import android.webkit.CookieManager
 import android.webkit.DownloadListener
 import android.webkit.GeolocationPermissions
 import android.webkit.URLUtil
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -37,6 +38,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import org.json.JSONTokener
 import java.net.URLEncoder
 import java.util.UUID
 
@@ -89,8 +91,20 @@ class BrowserController(private val activity: Activity) {
     var showHome by mutableStateOf(true)
         private set
 
+    /** 当前网页主题色（ARGB）；null 表示未取到，工具栏使用应用默认配色 */
+    var pageThemeColor by mutableStateOf<Int?>(null)
+        private set
+
+    /** 顶/底栏是否跟随网页主题色 */
+    var followPageTheme by mutableStateOf(app.settings.followPageTheme)
+        private set
+
     /** 由 Activity 注入：申请系统定位权限，结果回传给 WebView */
     var locationRequester: ((callback: (Boolean) -> Unit) -> Unit)? = null
+
+    /** 由 Activity 注入：处理网页内的文件选择（<input type="file">） */
+    var fileChooserRequester:
+        ((params: WebChromeClient.FileChooserParams, callback: (Array<Uri>?) -> Unit) -> Unit)? = null
 
     // ---------------- 容器与标签 ----------------
 
@@ -136,8 +150,10 @@ class BrowserController(private val activity: Activity) {
         if (index < 0) return
         activeIndex = index
         showHome = false
+        pageThemeColor = null
         renderContainer()
         refresh()
+        tabs[index].webView.let { updatePageTheme(it) }
     }
 
     fun goHome() {
@@ -148,6 +164,7 @@ class BrowserController(private val activity: Activity) {
             newTabInternal()
         }
         showHome = true
+        pageThemeColor = null
         renderContainer()
         refresh()
     }
@@ -266,6 +283,7 @@ class BrowserController(private val activity: Activity) {
                 if (view !== currentTab()?.webView) return
                 showHome = false
                 progress = 0.02f
+                pageThemeColor = null
                 refresh()
             }
 
@@ -274,6 +292,7 @@ class BrowserController(private val activity: Activity) {
                     progress = 1f
                     recordHistory(view)
                     refresh()
+                    updatePageTheme(view)
                     // 页面加载完成后自动备份一次，降低"交互后直接退出"导致的数据丢失风险
                     if (app.settings.autoBackup && url != null && !url.startsWith("about:")) {
                         app.backups.backupSite(view, url, view.title ?: url) { _, _ -> }
@@ -303,6 +322,16 @@ class BrowserController(private val activity: Activity) {
                 }
                 requester { granted -> callback.invoke(origin, granted, true) }
             }
+
+            override fun onShowFileChooser(
+                view: WebView,
+                filePathCallback: ValueCallback<Array<Uri>>,
+                fileChooserParams: FileChooserParams
+            ): Boolean {
+                val requester = fileChooserRequester ?: return false
+                requester(fileChooserParams) { uris -> filePathCallback.onReceiveValue(uris) }
+                return true
+            }
         }
 
         webView.setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
@@ -326,6 +355,30 @@ class BrowserController(private val activity: Activity) {
     private fun isSystemDark(): Boolean =
         (activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
+
+    /** 读取网页主题色（meta theme-color 或页面背景色），用于顶/底栏跟随 */
+    private fun updatePageTheme(view: WebView) {
+        if (!followPageTheme) {
+            pageThemeColor = null
+            return
+        }
+        view.evaluateJavascript(THEME_COLOR_JS) { raw ->
+            val hex = runCatching { JSONTokener(raw).nextValue() as? String }.getOrNull()
+            pageThemeColor = hex?.takeIf { it.length == 7 && it.startsWith("#") }
+                ?.let { runCatching { android.graphics.Color.parseColor(it) }.getOrNull() }
+        }
+    }
+
+    /** 切换"顶/底栏跟随网页主题色" */
+    fun applyFollowPageTheme(enabled: Boolean) {
+        followPageTheme = enabled
+        app.settings.followPageTheme = enabled
+        if (!enabled) {
+            pageThemeColor = null
+        } else {
+            currentTab()?.webView?.let { updatePageTheme(it) }
+        }
+    }
 
     /** 设置变化后应用到所有标签 */
     fun applySettings() {
@@ -495,5 +548,19 @@ class BrowserController(private val activity: Activity) {
 
     private fun toast(message: String) {
         Toast.makeText(activity, message, Toast.LENGTH_SHORT).show()
+    }
+
+    companion object {
+        /** 优先取 meta theme-color，其次取 body/html 背景色，统一转成 #RRGGBB */
+        private const val THEME_COLOR_JS =
+            "(function(){function h(c){if(!c)return '';c=(''+c).trim();" +
+                "if(c.charAt(0)==='#'){if(c.length===4)return '#'+c.charAt(1)+c.charAt(1)+c.charAt(2)+c.charAt(2)+c.charAt(3)+c.charAt(3);" +
+                "return c.substring(0,7);}" +
+                "if(c.indexOf('rgb')===0){var m=c.match(/\\d+/g);if(!m)return '';" +
+                "return '#'+((1<<24)+(+m[0]<<16)+(+m[1]<<8)+(+m[2])).toString(16).slice(1);}return '';}" +
+                "try{var m=document.querySelector('meta[name=\"theme-color\"]');var c=m&&m.content?h(m.content):'';" +
+                "if(!c&&document.body){c=h(getComputedStyle(document.body).backgroundColor);}" +
+                "if(!c&&document.documentElement){c=h(getComputedStyle(document.documentElement).backgroundColor);}" +
+                "return c;}catch(e){return '';}})()"
     }
 }
