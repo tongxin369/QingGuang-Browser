@@ -110,7 +110,10 @@ class BrowserController(private val activity: Activity) {
 
     fun attachContainer(frame: FrameLayout) {
         container = frame
+        // 首次进入至少保留一个空白标签，标签数字不会显示为 0
+        if (tabs.isEmpty()) newTabInternal()
         renderContainer()
+        refresh()
     }
 
     fun newTab(): BrowserTab {
@@ -378,6 +381,13 @@ class BrowserController(private val activity: Activity) {
         } else {
             currentTab()?.webView?.let { updatePageTheme(it) }
         }
+    }
+
+    /** 切换电脑模式（桌面版 UA） */
+    fun toggleDesktopMode() {
+        app.settings.desktopMode = !app.settings.desktopMode
+        applySettings()
+        toast(if (app.settings.desktopMode) "已切换到电脑模式" else "已切换回手机模式")
     }
 
     /** 设置变化后应用到所有标签 */

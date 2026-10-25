@@ -1,0 +1,25 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 方案 B：纯白底 + 墨黑地球网格 + 橙色光点 -->
+    <path
+        android:pathData="M54,54m-27,0a27,27 0 1,1 54,0a27,27 0 1,1 -54,0"
+        android:strokeWidth="4"
+        android:strokeColor="#1B1F24"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M27,54h54"
+        android:strokeWidth="4"
+        android:strokeColor="#1B1F24"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,27C40,27 40,81 54,81C68,81 68,27 54,27Z"
+        android:strokeWidth="4"
+        android:strokeColor="#1B1F24"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,54m-4.5,0a4.5,4.5 0 1,1 9,0a4.5,4.5 0 1,1 -9,0"
+        android:fillColor="#FF7A45" />
+</vector>

@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#0E2230</color>
+    <!-- 当前使用方案 A；切换图标时把 ic_launcher_background 与 ic_launcher_foreground 换成对应资源 -->
+    <color name="ic_launcher_background">#14171C</color>
+    <color name="ic_launcher_bg_a">#14171C</color>
+    <color name="ic_launcher_bg_b">#FFFFFF</color>
+    <color name="ic_launcher_bg_c">#2FD3A5</color>
+    <color name="ic_launcher_bg_d">#1E2A78</color>
 </resources>

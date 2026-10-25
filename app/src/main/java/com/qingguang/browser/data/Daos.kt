@@ -18,6 +18,24 @@ interface BookmarkDao {
 
     @Query("SELECT COUNT(*) FROM bookmarks WHERE url = :url")
     suspend fun countByUrl(url: String): Int
+
+    @Query("UPDATE bookmarks SET folderId = :folderId WHERE id = :id")
+    suspend fun moveToFolder(id: Long, folderId: Long)
+}
+
+@Dao
+interface BookmarkFolderDao {
+    @Query("SELECT * FROM bookmark_folders ORDER BY createdAt ASC")
+    fun observeAll(): Flow<List<BookmarkFolder>>
+
+    @Insert
+    suspend fun insert(folder: BookmarkFolder): Long
+
+    @Query("UPDATE bookmark_folders SET name = :name WHERE id = :id")
+    suspend fun rename(id: Long, name: String)
+
+    @Query("DELETE FROM bookmark_folders WHERE id = :id")
+    suspend fun delete(id: Long)
 }
 
 @Dao

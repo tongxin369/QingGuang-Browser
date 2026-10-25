@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+
 package com.qingguang.browser.ui
 
 import android.content.ClipData
@@ -5,8 +7,10 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -17,11 +21,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -32,9 +39,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
@@ -116,6 +126,7 @@ fun BrowserScreen(controller: BrowserController) {
     var overlay by remember { mutableStateOf<OverlayPage?>(null) }
     var showTabs by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
+    var showAddBookmark by remember { mutableStateOf(false) }
 
     LaunchedEffect(controller.currentUrl) {
         if (!controller.showHome) address = controller.currentUrl
@@ -153,7 +164,6 @@ fun BrowserScreen(controller: BrowserController) {
                     focusManager.clearFocus()
                 },
                 onReload = { controller.reload() },
-                onMenu = { showMenu = true },
                 progress = controller.progress,
                 colors = bars
             )
@@ -182,8 +192,12 @@ fun BrowserScreen(controller: BrowserController) {
             onOpenOverlay = {
                 showMenu = false
                 overlay = it
-            }
+            },
+            onAddBookmark = { showAddBookmark = true }
         )
+    }
+    if (showAddBookmark) {
+        AddBookmarkDialog(controller = controller, onDismiss = { showAddBookmark = false })
     }
     overlay?.let { page ->
         OverlayPageHost(
@@ -210,7 +224,6 @@ private fun AddressBar(
     onAddressChange: (String) -> Unit,
     onSubmit: () -> Unit,
     onReload: () -> Unit,
-    onMenu: () -> Unit,
     progress: Float,
     colors: BarColors
 ) {
@@ -261,9 +274,6 @@ private fun AddressBar(
             IconButton(onClick = onReload, modifier = Modifier.size(38.dp)) {
                 Icon(Icons.Filled.Refresh, contentDescription = "刷新", tint = colors.content)
             }
-            IconButton(onClick = onMenu, modifier = Modifier.size(38.dp)) {
-                Icon(Icons.Filled.MoreVert, contentDescription = "菜单", tint = colors.content)
-            }
         }
         if (progress > 0.01f && progress < 0.99f) {
             LinearProgressIndicator(
@@ -312,16 +322,17 @@ private fun BottomBar(
                 content = colors.content
             ) { controller.goHome() }
             IconButton(onClick = onShowTabs) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.Filled.Tab, contentDescription = "标签页", tint = colors.content)
+                // Via 风格：圆角方框 + 内部数字表示标签数量
+                Box(
+                    Modifier
+                        .size(21.dp)
+                        .border(1.6.dp, colors.content, RoundedCornerShape(5.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
                     Text(
                         text = controller.tabCount.toString(),
-                        fontSize = 9.sp,
-                        color = colors.container,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .background(colors.content, CircleShape)
-                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                        fontSize = 10.sp,
+                        color = colors.content
                     )
                 }
             }
@@ -352,28 +363,44 @@ private fun BarIcon(
     }
 }
 
-/** Via 风格标签页：整屏列表，底部整行「+」新建空白页 */
+/** Via 风格标签页：底部弹出的列表，底部与「+」新建空白页在同一块 */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TabSwitcherScreen(controller: BrowserController, onDismiss: () -> Unit) {
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(Modifier.fillMaxSize()) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.background,
+        dragHandle = null
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = 540.dp)
+        ) {
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 4.dp),
+                    .padding(start = 20.dp, end = 8.dp, top = 14.dp, bottom = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     "标签页",
-                    fontSize = 19.sp,
+                    fontSize = 16.sp,
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.weight(1f)
                 )
                 IconButton(onClick = onDismiss) {
-                    Icon(Icons.Filled.Close, contentDescription = "关闭", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "关闭",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
             }
-            LazyColumn(Modifier.weight(1f)) {
+            LazyColumn(Modifier.weight(1f, fill = false)) {
                 items(controller.tabList, key = { it.id }) { tab ->
                     TabRow(
                         tab = tab,
@@ -389,7 +416,7 @@ private fun TabSwitcherScreen(controller: BrowserController, onDismiss: () -> Un
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .height(56.dp)
+                    .height(52.dp)
                     .clickable {
                         controller.newTab()
                         onDismiss()
@@ -400,10 +427,9 @@ private fun TabSwitcherScreen(controller: BrowserController, onDismiss: () -> Un
                 Icon(
                     Icons.Filled.Add,
                     contentDescription = "新建标签页",
-                    tint = MaterialTheme.colorScheme.onSurface
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(20.dp)
                 )
-                Spacer(Modifier.width(6.dp))
-                Text("新建标签页", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
             }
         }
     }
@@ -480,22 +506,37 @@ private fun tabInitial(title: String, url: String): String {
     return source.take(1).uppercase()
 }
 
-private data class MenuAction(
-    val label: String,
-    val icon: ImageVector,
-    val onClick: () -> Unit
-)
+private fun menuIcon(item: MenuItem, isDark: Boolean): ImageVector = when (item) {
+    MenuItem.ADD_BOOKMARK -> Icons.Filled.BookmarkAdd
+    MenuItem.BACKUP_PAGE -> Icons.Filled.CloudUpload
+    MenuItem.BOOKMARKS -> Icons.Filled.BookmarkBorder
+    MenuItem.HISTORY -> Icons.Filled.History
+    MenuItem.DOWNLOADS -> Icons.Filled.Download
+    MenuItem.DATA_BACKUP -> Icons.Filled.Backup
+    MenuItem.SETTINGS -> Icons.Filled.Settings
+    MenuItem.REFRESH -> Icons.Filled.Refresh
+    MenuItem.COPY_URL -> Icons.Filled.ContentCopy
+    MenuItem.SHARE -> Icons.Filled.Share
+    MenuItem.DARK_TOGGLE -> if (isDark) Icons.Filled.LightMode else Icons.Filled.DarkMode
+    MenuItem.DESKTOP_MODE -> Icons.Filled.DesktopWindows
+    MenuItem.CLEAR_CACHE -> Icons.Filled.Delete
+    MenuItem.HOME -> Icons.Filled.Home
+    MenuItem.CLOSE_TAB -> Icons.Filled.Close
+}
+
+private fun menuLabel(item: MenuItem, isDark: Boolean): String =
+    if (item == MenuItem.DARK_TOGGLE && isDark) "日间模式" else item.label
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MenuSheet(
     controller: BrowserController,
     onDismiss: () -> Unit,
-    onOpenOverlay: (OverlayPage) -> Unit
+    onOpenOverlay: (OverlayPage) -> Unit,
+    onAddBookmark: () -> Unit
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as App
-    val scope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val systemDark = isSystemInDarkTheme()
     val isDark = when (ThemeController.mode) {
@@ -504,23 +545,36 @@ private fun MenuSheet(
         else -> systemDark
     }
 
-    val actions = listOf(
-        MenuAction("书签", Icons.Filled.BookmarkBorder) { onOpenOverlay(OverlayPage.BOOKMARKS) },
-        MenuAction("历史", Icons.Filled.History) { onOpenOverlay(OverlayPage.HISTORY) },
-        MenuAction("下载", Icons.Filled.Download) { onOpenOverlay(OverlayPage.DOWNLOADS) },
-        MenuAction("备份", Icons.Filled.Backup) { onOpenOverlay(OverlayPage.DATA_BACKUPS) },
-        MenuAction("设置", Icons.Filled.Settings) { onOpenOverlay(OverlayPage.SETTINGS) },
-        MenuAction("刷新", Icons.Filled.Refresh) { controller.reload() },
-        MenuAction("复制链接", Icons.Filled.ContentCopy) {
-            copyToClipboard(context, controller.currentUrl)
-        },
-        MenuAction("分享", Icons.Filled.Share) {
-            shareUrl(context, controller.currentUrl)
-        },
-        MenuAction(if (isDark) "日间模式" else "夜间模式",
-            if (isDark) Icons.Filled.LightMode else Icons.Filled.DarkMode
-        ) { ThemeController.set(context, if (isDark) 1 else 2) }
-    )
+    val order = remember(app.settings.menuOrder) { MenuConfig.currentOrder(app.settings) }
+    val pageSize = MenuConfig.pageSize(app.settings)
+    val pages = remember(order, pageSize) {
+        order.chunked(pageSize).ifEmpty { listOf(emptyList()) }
+    }
+    val pagerState = rememberPagerState(pageCount = { pages.size })
+
+    fun run(item: MenuItem) {
+        onDismiss()
+        when (item) {
+            MenuItem.ADD_BOOKMARK -> onAddBookmark()
+            MenuItem.BACKUP_PAGE -> controller.backupCurrent { _, msg ->
+                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+            }
+            MenuItem.BOOKMARKS -> onOpenOverlay(OverlayPage.BOOKMARKS)
+            MenuItem.HISTORY -> onOpenOverlay(OverlayPage.HISTORY)
+            MenuItem.DOWNLOADS -> onOpenOverlay(OverlayPage.DOWNLOADS)
+            MenuItem.DATA_BACKUP -> onOpenOverlay(OverlayPage.DATA_BACKUPS)
+            MenuItem.SETTINGS -> onOpenOverlay(OverlayPage.SETTINGS)
+            MenuItem.REFRESH -> controller.reload()
+            MenuItem.COPY_URL -> copyToClipboard(context, controller.currentUrl)
+            MenuItem.SHARE -> shareUrl(context, controller.currentUrl)
+            MenuItem.DARK_TOGGLE -> ThemeController.set(context, if (isDark) 1 else 2)
+            MenuItem.DESKTOP_MODE -> controller.toggleDesktopMode()
+            MenuItem.CLEAR_CACHE -> controller.clearCacheOnly()
+            MenuItem.HOME -> controller.goHome()
+            MenuItem.CLOSE_TAB -> controller.tabList.firstOrNull { it.isActive }
+                ?.let { controller.closeTab(it.id) }
+        }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -530,99 +584,64 @@ private fun MenuSheet(
         Column(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp)
-                .padding(bottom = 20.dp)
+                .padding(bottom = 18.dp)
         ) {
-            Text(
-                "菜单",
-                fontSize = 15.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 8.dp, bottom = 4.dp)
-            )
-            actions.chunked(4).forEach { row ->
-                Row(Modifier.fillMaxWidth()) {
-                    row.forEach { action ->
-                        Column(
-                            Modifier
-                                .weight(1f)
-                                .clickable {
-                                    action.onClick()
-                                    onDismiss()
-                                }
-                                .padding(vertical = 10.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Icon(
-                                action.icon,
-                                contentDescription = action.label,
-                                tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(22.dp)
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                action.label,
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                    if (row.size < 4) {
-                        repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
-                    }
-                }
-            }
-
-            HorizontalDivider(
-                Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                color = MaterialTheme.colorScheme.outlineVariant
-            )
-
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("顶/底栏跟随网页主题色", fontSize = 13.sp)
-                    Text(
-                        "取网页 theme-color 或背景色",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
-                    checked = controller.followPageTheme,
-                    onCheckedChange = { controller.applyFollowPageTheme(it) }
-                )
-            }
-
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(
-                    onClick = {
-                        val url = controller.currentUrl
-                        if (url.isNotBlank()) {
-                            scope.launch {
-                                if (app.database.bookmarkDao().countByUrl(url) == 0) {
-                                    app.database.bookmarkDao().insert(
-                                        com.qingguang.browser.data.Bookmark(
-                                            title = controller.currentTitle,
-                                            url = url
-                                        )
+            HorizontalPager(state = pagerState) { pageIndex ->
+                Column(Modifier.fillMaxWidth()) {
+                    pages[pageIndex].chunked(MenuConfig.COLUMNS).forEach { row ->
+                        Row(Modifier.fillMaxWidth()) {
+                            row.forEach { item ->
+                                Column(
+                                    Modifier
+                                        .weight(1f)
+                                        .clickable { run(item) }
+                                        .padding(vertical = 12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Icon(
+                                        menuIcon(item, isDark),
+                                        contentDescription = menuLabel(item, isDark),
+                                        tint = MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        menuLabel(item, isDark),
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }
+                            if (row.size < MenuConfig.COLUMNS) {
+                                repeat(MenuConfig.COLUMNS - row.size) { Spacer(Modifier.weight(1f)) }
+                            }
                         }
-                        onDismiss()
                     }
-                ) { Text("收藏当前页") }
-                TextButton(onClick = { onOpenOverlay(OverlayPage.DATA_BACKUPS) }) {
-                    Text("备份当前页")
+                }
+            }
+            if (pages.size > 1) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    repeat(pages.size) { index ->
+                        Box(
+                            Modifier
+                                .padding(horizontal = 3.dp)
+                                .size(if (index == pagerState.currentPage) 7.dp else 5.dp)
+                                .background(
+                                    if (index == pagerState.currentPage) {
+                                        MaterialTheme.colorScheme.onSurface
+                                    } else {
+                                        MaterialTheme.colorScheme.outline
+                                    },
+                                    CircleShape
+                                )
+                        )
+                    }
                 }
             }
         }

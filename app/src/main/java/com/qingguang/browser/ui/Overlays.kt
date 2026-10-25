@@ -20,13 +20,19 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
@@ -108,32 +114,189 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
     val bookmarks by app.database.bookmarkDao()
         .observeAll()
         .collectAsStateWithLifecycle(initialValue = emptyList())
+    val folders by app.database.bookmarkFolderDao()
+        .observeAll()
+        .collectAsStateWithLifecycle(initialValue = emptyList())
 
-    if (bookmarks.isEmpty()) {
-        EmptyHint("还没有书签。打开网页后，从菜单里点「收藏当前页」。")
-        return
+    /** null = 全部；0 = 未分类；其它为文件夹 id */
+    var selectedFolder by remember { mutableStateOf<Long?>(null) }
+    var showNewFolder by remember { mutableStateOf(false) }
+    var newFolderName by remember { mutableStateOf("") }
+    var pendingDeleteFolder by remember { mutableStateOf<com.qingguang.browser.data.BookmarkFolder?>(null) }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            androidx.compose.foundation.lazy.LazyRow(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                item {
+                    FilterChip(
+                        selected = selectedFolder == null,
+                        onClick = { selectedFolder = null },
+                        label = { Text("全部") }
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = selectedFolder == 0L,
+                        onClick = { selectedFolder = 0L },
+                        label = { Text("未分类") }
+                    )
+                }
+                items(folders, key = { it.id }) { folder ->
+                    FilterChip(
+                        selected = selectedFolder == folder.id,
+                        onClick = { selectedFolder = folder.id },
+                        label = { Text(folder.name, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    )
+                }
+            }
+            IconButton(onClick = { showNewFolder = true }) {
+                Icon(Icons.Filled.Add, contentDescription = "新建文件夹")
+            }
+        }
+
+        if (bookmarks.isEmpty() && folders.isEmpty()) {
+            EmptyHint("还没有书签。打开网页后，从菜单里点「添加书签」。")
+            return@Column
+        }
+
+        LazyColumn(Modifier.fillMaxSize()) {
+            val grouped = folders.map { folder ->
+                folder to bookmarks.filter { it.folderId == folder.id }
+            } + (null to bookmarks.filter { it.folderId == 0L })
+
+            grouped.forEach { (folder, itemsInFolder) ->
+                val folderId = folder?.id ?: 0L
+                val visible = when (selectedFolder) {
+                    null -> true
+                    else -> selectedFolder == folderId
+                }
+                if (!visible) return@forEach
+                if (selectedFolder == null) {
+                    item(key = "header-$folderId") {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, end = 4.dp, top = 10.dp, bottom = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                folder?.name ?: "未分类",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                itemsInFolder.size.toString(),
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (folder != null) {
+                                IconButton(
+                                    onClick = { pendingDeleteFolder = folder },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Delete,
+                                        contentDescription = "删除文件夹",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                items(itemsInFolder, key = { it.id }) { bookmark ->
+                    ListItem(
+                        headlineContent = {
+                            Text(bookmark.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        },
+                        supportingContent = {
+                            Text(
+                                bookmark.url,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                fontSize = 11.sp
+                            )
+                        },
+                        trailingContent = {
+                            IconButton(onClick = {
+                                scope.launch { app.database.bookmarkDao().delete(bookmark.id) }
+                            }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "删除书签")
+                            }
+                        },
+                        modifier = Modifier.clickable {
+                            controller.loadUrl(bookmark.url)
+                            onClose()
+                        }
+                    )
+                }
+            }
+        }
     }
 
-    LazyColumn(Modifier.fillMaxSize()) {
-        items(bookmarks, key = { it.id }) { bookmark ->
-            ListItem(
-                headlineContent = {
-                    Text(bookmark.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                },
-                supportingContent = {
-                    Text(bookmark.url, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp)
-                },
-                trailingContent = {
-                    IconButton(onClick = { scope.launch { app.database.bookmarkDao().delete(bookmark.id) } }) {
-                        Icon(Icons.Filled.Delete, contentDescription = "删除书签")
+    if (showNewFolder) {
+        AlertDialog(
+            onDismissRequest = { showNewFolder = false },
+            title = { Text("新建文件夹") },
+            text = {
+                androidx.compose.material3.OutlinedTextField(
+                    value = newFolderName,
+                    onValueChange = { newFolderName = it },
+                    label = { Text("文件夹名称") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            app.database.bookmarkFolderDao()
+                                .insert(com.qingguang.browser.data.BookmarkFolder(name = newFolderName.trim()))
+                        }
+                        newFolderName = ""
+                        showNewFolder = false
+                    },
+                    enabled = newFolderName.isNotBlank()
+                ) { Text("创建") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNewFolder = false }) { Text("取消") }
+            }
+        )
+    }
+
+    pendingDeleteFolder?.let { folder ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteFolder = null },
+            title = { Text("删除文件夹？") },
+            text = { Text("文件夹「${folder.name}」里的书签会移到「未分类」，不会被删除。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        bookmarks.filter { it.folderId == folder.id }.forEach {
+                            app.database.bookmarkDao().moveToFolder(it.id, 0L)
+                        }
+                        app.database.bookmarkFolderDao().delete(folder.id)
                     }
-                },
-                modifier = Modifier.clickable {
-                    controller.loadUrl(bookmark.url)
-                    onClose()
-                }
-            )
-        }
+                    if (selectedFolder == folder.id) selectedFolder = null
+                    pendingDeleteFolder = null
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteFolder = null }) { Text("取消") }
+            }
+        )
     }
 }
 
@@ -295,18 +458,21 @@ private fun BackupsPage(controller: BrowserController) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Row(Modifier.padding(top = 4.dp)) {
-                TextButton(
+                OutlinedButton(
                     onClick = { dirLauncher.launch(null) },
-                    contentPadding = PaddingValues(horizontal = 4.dp)
+                    modifier = Modifier.height(36.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp)
                 ) { Text("选择目录", fontSize = 13.sp) }
                 if (usesCustom) {
-                    TextButton(
+                    Spacer(Modifier.width(10.dp))
+                    OutlinedButton(
                         onClick = {
                             app.backups.resetToDefault()
                             refreshList()
                             message = "已恢复应用私有备份目录"
                         },
-                        contentPadding = PaddingValues(horizontal = 4.dp)
+                        modifier = Modifier.height(36.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp)
                     ) { Text("恢复默认", fontSize = 13.sp) }
                 }
             }
@@ -447,6 +613,8 @@ private fun SettingsPage(controller: BrowserController) {
     var confirmClearData by remember { mutableStateOf(false) }
     var appTheme by remember { mutableStateOf(ThemeController.mode) }
     var followPageTheme by remember { mutableStateOf(controller.followPageTheme) }
+    var menuOrder by remember { mutableStateOf(MenuConfig.currentOrder(app.settings)) }
+    var menuRows by remember { mutableStateOf(app.settings.menuRows) }
 
     Column(
         Modifier
@@ -490,6 +658,84 @@ private fun SettingsPage(controller: BrowserController) {
                 controller.applyFollowPageTheme(it)
             }
         )
+
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
+        SectionTitle("定制菜单")
+        Text(
+            "调整功能菜单的排列顺序；菜单每行 5 个，每页行数与分页如下。",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(
+            Modifier.padding(top = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf(2, 3, 4, 5).forEach { rows ->
+                FilterChip(
+                    selected = menuRows == rows,
+                    onClick = {
+                        menuRows = rows
+                        app.settings.menuRows = rows
+                    },
+                    label = { Text("每页 $rows 行", fontSize = 12.sp) }
+                )
+            }
+        }
+        menuOrder.forEachIndexed { index, item ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 1.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "${index + 1}. ${item.label}",
+                    fontSize = 13.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(
+                    onClick = {
+                        if (index > 0) {
+                            val list = menuOrder.toMutableList()
+                            val tmp = list[index - 1]
+                            list[index - 1] = list[index]
+                            list[index] = tmp
+                            menuOrder = list
+                            MenuConfig.save(app.settings, list)
+                        }
+                    },
+                    enabled = index > 0,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.KeyboardArrowUp,
+                        contentDescription = "上移",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        if (index < menuOrder.size - 1) {
+                            val list = menuOrder.toMutableList()
+                            val tmp = list[index + 1]
+                            list[index + 1] = list[index]
+                            list[index] = tmp
+                            menuOrder = list
+                            MenuConfig.save(app.settings, list)
+                        }
+                    },
+                    enabled = index < menuOrder.size - 1,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.KeyboardArrowDown,
+                        contentDescription = "下移",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
 

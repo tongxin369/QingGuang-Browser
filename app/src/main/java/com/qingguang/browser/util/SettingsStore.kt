@@ -47,6 +47,16 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_BACKUP_TREE_URI, null)
         set(value) = prefs.edit().putString(KEY_BACKUP_TREE_URI, value).apply()
 
+    /** 功能菜单顺序（逗号分隔的菜单项 key）；null 表示使用默认顺序 */
+    var menuOrder: String?
+        get() = prefs.getString(KEY_MENU_ORDER, null)
+        set(value) = prefs.edit().putString(KEY_MENU_ORDER, value).apply()
+
+    /** 功能菜单每页行数（每行 5 个），超出部分左右滑动分页 */
+    var menuRows: Int
+        get() = prefs.getInt(KEY_MENU_ROWS, 3)
+        set(value) = prefs.edit().putInt(KEY_MENU_ROWS, value).apply()
+
     companion object {
         private const val KEY_SEARCH_ENGINE = "search_engine"
         private const val KEY_AUTO_BACKUP = "auto_backup"
@@ -56,6 +66,8 @@ class SettingsStore(context: Context) {
         private const val KEY_APP_THEME = "app_theme"
         private const val KEY_FOLLOW_PAGE_THEME = "follow_page_theme"
         private const val KEY_BACKUP_TREE_URI = "backup_tree_uri"
+        private const val KEY_MENU_ORDER = "menu_order"
+        private const val KEY_MENU_ROWS = "menu_rows"
 
         const val DEFAULT_SEARCH_ENGINE = "https://www.bing.com/search?q=%s"
         const val DESKTOP_UA =
