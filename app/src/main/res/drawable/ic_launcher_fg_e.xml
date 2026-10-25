@@ -1,0 +1,45 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 方案 E：纯白底 + 亮蓝细线地球网格 + 金色中心点 -->
+    <path
+        android:pathData="M54,54m-27,0a27,27 0 1,1 54,0a27,27 0 1,1 -54,0"
+        android:strokeWidth="3.5"
+        android:strokeColor="#2E7CF6"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M27,54h54"
+        android:strokeWidth="3.5"
+        android:strokeColor="#2E7CF6"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M31,40h46"
+        android:strokeWidth="2.5"
+        android:strokeColor="#5C9DFF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M31,68h46"
+        android:strokeWidth="2.5"
+        android:strokeColor="#5C9DFF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,27C38,27 38,81 54,81C70,81 70,27 54,27Z"
+        android:strokeWidth="3"
+        android:strokeColor="#2E7CF6"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,27C62,36 62,72 54,81"
+        android:strokeWidth="2"
+        android:strokeColor="#5C9DFF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,27C46,36 46,72 54,81"
+        android:strokeWidth="2"
+        android:strokeColor="#5C9DFF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,54m-5,0a5,5 0 1,1 10,0a5,5 0 1,1 -10,0"
+        android:fillColor="#F5A623" />
+</vector>

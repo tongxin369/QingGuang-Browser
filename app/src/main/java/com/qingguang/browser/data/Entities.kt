@@ -3,11 +3,12 @@ package com.qingguang.browser.data
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
-/** 书签文件夹；folderId = 0 表示未分类（根） */
+/** 书签文件夹；parentId = 0 表示根目录，可无限嵌套 */
 @Entity(tableName = "bookmark_folders")
 data class BookmarkFolder(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
+    val parentId: Long = 0,
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -17,6 +18,18 @@ data class Bookmark(
     val title: String,
     val url: String,
     val folderId: Long = 0,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+/** 首页快捷入口：isFolder=false 为网页图标；为 true 时作为分组合并多个图标（parentId 指向它） */
+@Entity(tableName = "home_items")
+data class HomeItem(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val title: String,
+    val url: String = "",
+    val parentId: Long = 0,
+    val isFolder: Boolean = false,
+    val sortOrder: Int = 0,
     val createdAt: Long = System.currentTimeMillis()
 )
 

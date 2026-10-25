@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>轻光浏览器 · 图标方案预览</title>
+<style>
+  :root { --ink:#1B1D21; --muted:#6B7280; --line:#E6EAF0; }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; padding:32px 20px 48px;
+    background:#F5F7FA; color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  h1 { font-size:20px; margin:0 0 6px; }
+  p.lead { color:var(--muted); font-size:13px; margin:0 0 28px; }
+  .grid { display:flex; flex-wrap:wrap; gap:20px; }
+  .card {
+    flex:1 1 260px; background:#fff; border:1px solid var(--line);
+    border-radius:18px; padding:22px 20px 18px; text-align:center;
+  }
+  .badge {
+    display:inline-block; font-size:11px; color:#2E7CF6;
+    background:#EAF2FF; border-radius:999px; padding:3px 10px; margin-bottom:16px;
+  }
+  .stage {
+    background:#F5F7FA; border-radius:16px; padding:22px 0; margin-bottom:14px;
+  }
+  svg { display:block; margin:0 auto; }
+  .sizes { display:flex; justify-content:center; gap:18px; align-items:flex-end; margin-top:8px; }
+  h2 { font-size:15px; margin:8px 0 4px; }
+  .desc { font-size:12px; color:var(--muted); line-height:1.6; }
+  .palette { display:flex; justify-content:center; gap:8px; margin-top:10px; }
+  .dot { width:16px; height:16px; border-radius:50%; border:1px solid rgba(0,0,0,.08); }
+  .note { margin-top:26px; font-size:12px; color:var(--muted); text-align:center; }
+</style>
+</head>
+<body>
+<h1>轻光浏览器 · 应用图标方案</h1>
+<p class="lead">设计方向：纯白底 + 科技蓝地球网格 + 金色中心点。当前已安装版本使用「方案 E」。</p>
+
+<div class="grid">
+
+  <div class="card">
+    <span class="badge">方案 E · 当前采用</span>
+    <div class="stage">
+      <svg width="150" height="150" viewBox="0 0 108 108" aria-label="方案E">
+        <rect width="108" height="108" rx="24" fill="#FFFFFF"/>
+        <circle cx="54" cy="54" r="27" fill="none" stroke="#2E7CF6" stroke-width="3.5"/>
+        <line x1="27" y1="54" x2="81" y2="54" stroke="#2E7CF6" stroke-width="3.5" stroke-linecap="round"/>
+        <line x1="31" y1="40" x2="77" y2="40" stroke="#5C9DFF" stroke-width="2.5" stroke-linecap="round"/>
+        <line x1="31" y1="68" x2="77" y2="68" stroke="#5C9DFF" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M54,27C38,27 38,81 54,81C70,81 70,27 54,27Z" fill="none" stroke="#2E7CF6" stroke-width="3"/>
+        <path d="M54,27C62,36 62,72 54,81" fill="none" stroke="#5C9DFF" stroke-width="2"/>
+        <path d="M54,27C46,36 46,72 54,81" fill="none" stroke="#5C9DFF" stroke-width="2"/>
+        <circle cx="54" cy="54" r="5" fill="#F5A623"/>
+      </svg>
+      <div class="sizes">
+        <svg width="48" height="48" viewBox="0 0 108 108"><rect width="108" height="108" rx="24" fill="#FFF"/><circle cx="54" cy="54" r="27" fill="none" stroke="#2E7CF6" stroke-width="4.5"/><line x1="27" y1="54" x2="81" y2="54" stroke="#2E7CF6" stroke-width="4.5"/><path d="M54,27C38,27 38,81 54,81C70,81 70,27 54,27Z" fill="none" stroke="#2E7CF6" stroke-width="4"/><circle cx="54" cy="54" r="6.5" fill="#F5A623"/></svg>
+        <svg width="34" height="34" viewBox="0 0 108 108"><rect width="108" height="108" rx="24" fill="#FFF"/><circle cx="54" cy="54" r="27" fill="none" stroke="#2E7CF6" stroke-width="6"/><line x1="27" y1="54" x2="81" y2="54" stroke="#2E7CF6" stroke-width="6"/><path d="M54,27C38,27 38,81 54,81C70,81 70,27 54,27Z" fill="none" stroke="#2E7CF6" stroke-width="5"/><circle cx="54" cy="54" r="8" fill="#F5A623"/></svg>
+      </div>
+    </div>
+    <h2>亮蓝细线地球</h2>
+    <div class="desc">线条最轻、留白最多，缩到小尺寸也清晰。<br>适合极简、年轻化的整体气质。</div>
+    <div class="palette"><span class="dot" style="background:#2E7CF6"></span><span class="dot" style="background:#5C9DFF"></span><span class="dot" style="background:#F5A623"></span></div>
+  </div>
+
+  <div class="card">
+    <span class="badge">方案 F · 浅蓝双环</span>
+    <div class="stage">
+      <svg width="150" height="150" viewBox="0 0 108 108" aria-label="方案F">
+        <rect width="108" height="108" rx="24" fill="#FFFFFF"/>
+        <circle cx="54" cy="54" r="28" fill="none" stroke="#4DA3FF" stroke-width="5"/>
+        <circle cx="54" cy="54" r="19" fill="none" stroke="#8FC4FF" stroke-width="2"/>
+        <line x1="26" y1="54" x2="82" y2="54" stroke="#4DA3FF" stroke-width="2.5"/>
+        <path d="M54,26C38,26 38,82 54,82C70,82 70,26 54,26Z" fill="none" stroke="#4DA3FF" stroke-width="2.5"/>
+        <line x1="32" y1="40" x2="76" y2="40" stroke="#8FC4FF" stroke-width="2"/>
+        <line x1="32" y1="68" x2="76" y2="68" stroke="#8FC4FF" stroke-width="2"/>
+        <circle cx="54" cy="54" r="5.5" fill="#E8A33D"/>
+      </svg>
+    </div>
+    <h2>浅蓝双环科技感</h2>
+    <div class="desc">双环 + 浅蓝内圈，科技感更强，金色中心更暖、不刺眼。</div>
+    <div class="palette"><span class="dot" style="background:#4DA3FF"></span><span class="dot" style="background:#8FC4FF"></span><span class="dot" style="background:#E8A33D"></span></div>
+  </div>
+
+  <div class="card">
+    <span class="badge">方案 G · 深蓝粗环</span>
+    <div class="stage">
+      <svg width="150" height="150" viewBox="0 0 108 108" aria-label="方案G">
+        <rect width="108" height="108" rx="24" fill="#FFFFFF"/>
+        <circle cx="54" cy="54" r="27" fill="none" stroke="#1E6FE0" stroke-width="5.5"/>
+        <line x1="28" y1="42" x2="80" y2="42" stroke="#4DA3FF" stroke-width="2.5"/>
+        <line x1="28" y1="66" x2="80" y2="66" stroke="#4DA3FF" stroke-width="2.5"/>
+        <line x1="27" y1="54" x2="81" y2="54" stroke="#4DA3FF" stroke-width="2.5"/>
+        <path d="M54,27C40,27 40,81 54,81C68,81 68,27 54,27Z" fill="none" stroke="#4DA3FF" stroke-width="2.5"/>
+        <circle cx="54" cy="54" r="5" fill="#F0B429"/>
+      </svg>
+    </div>
+    <h2>深蓝主环 + 亮蓝经纬</h2>
+    <div class="desc">主环更粗、对比更强，桌面上一眼能认出；金色中心偏橙。</div>
+    <div class="palette"><span class="dot" style="background:#1E6FE0"></span><span class="dot" style="background:#4DA3FF"></span><span class="dot" style="background:#F0B429"></span></div>
+  </div>
+
+</div>
+
+<p class="note">看完告诉我要换哪一版即可（默认已是方案 E）。三版都保留在代码中，随时可切换。</p>
+</body>
+</html>

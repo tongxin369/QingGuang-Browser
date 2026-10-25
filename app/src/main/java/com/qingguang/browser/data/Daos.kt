@@ -21,6 +21,9 @@ interface BookmarkDao {
 
     @Query("UPDATE bookmarks SET folderId = :folderId WHERE id = :id")
     suspend fun moveToFolder(id: Long, folderId: Long)
+
+    @Query("UPDATE bookmarks SET title = :title, url = :url, folderId = :folderId WHERE id = :id")
+    suspend fun update(id: Long, title: String, url: String, folderId: Long)
 }
 
 @Dao
@@ -34,8 +37,32 @@ interface BookmarkFolderDao {
     @Query("UPDATE bookmark_folders SET name = :name WHERE id = :id")
     suspend fun rename(id: Long, name: String)
 
+    @Query("UPDATE bookmark_folders SET parentId = :parentId WHERE id = :id")
+    suspend fun moveToParent(id: Long, parentId: Long)
+
     @Query("DELETE FROM bookmark_folders WHERE id = :id")
     suspend fun delete(id: Long)
+}
+
+@Dao
+interface HomeItemDao {
+    @Query("SELECT * FROM home_items ORDER BY sortOrder ASC, createdAt ASC")
+    fun observeAll(): Flow<List<HomeItem>>
+
+    @Insert
+    suspend fun insert(item: HomeItem): Long
+
+    @Query("UPDATE home_items SET parentId = :parentId, sortOrder = :sortOrder WHERE id = :id")
+    suspend fun moveToParent(id: Long, parentId: Long, sortOrder: Int)
+
+    @Query("UPDATE home_items SET title = :title WHERE id = :id")
+    suspend fun rename(id: Long, title: String)
+
+    @Query("DELETE FROM home_items WHERE id = :id")
+    suspend fun delete(id: Long)
+
+    @Query("SELECT COUNT(*) FROM home_items WHERE url = :url AND parentId = 0")
+    suspend fun countOnHome(url: String): Int
 }
 
 @Dao

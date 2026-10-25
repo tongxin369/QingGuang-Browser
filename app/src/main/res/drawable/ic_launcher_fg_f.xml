@@ -1,0 +1,40 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 方案 F：纯白底 + 浅蓝双环科技地球 + 暖金中心点 -->
+    <path
+        android:pathData="M54,54m-28,0a28,28 0 1,1 56,0a28,28 0 1,1 -56,0"
+        android:strokeWidth="5"
+        android:strokeColor="#4DA3FF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,54m-19,0a19,19 0 1,1 38,0a19,19 0 1,1 -38,0"
+        android:strokeWidth="2"
+        android:strokeColor="#8FC4FF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M26,54h56"
+        android:strokeWidth="2.5"
+        android:strokeColor="#4DA3FF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,26C38,26 38,82 54,82C70,82 70,26 54,26Z"
+        android:strokeWidth="2.5"
+        android:strokeColor="#4DA3FF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M32,40h44"
+        android:strokeWidth="2"
+        android:strokeColor="#8FC4FF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M32,68h44"
+        android:strokeWidth="2"
+        android:strokeColor="#8FC4FF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,54m-5.5,0a5.5,5.5 0 1,1 11,0a5.5,5.5 0 1,1 -11,0"
+        android:fillColor="#E8A33D" />
+</vector>

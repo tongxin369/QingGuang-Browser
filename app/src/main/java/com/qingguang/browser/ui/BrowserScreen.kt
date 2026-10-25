@@ -173,27 +173,37 @@ fun BrowserScreen(controller: BrowserController) {
             if (controller.showHome) {
                 HomePage(controller = controller, onOpenOverlay = { overlay = it })
             }
+            // Via 风格：标签列表与功能菜单都贴在底部导航栏上方展开
+            if (showTabs) {
+                TabPanel(
+                    controller = controller,
+                    colors = bars,
+                    onDismiss = { showTabs = false }
+                )
+            }
+            if (showMenu) {
+                MenuPanel(
+                    controller = controller,
+                    onDismiss = { showMenu = false },
+                    onOpenOverlay = {
+                        showMenu = false
+                        overlay = it
+                    },
+                    onAddBookmark = { showAddBookmark = true }
+                )
+            }
         }
         BottomBar(
             controller = controller,
-            onShowTabs = { showTabs = true },
-            onMenu = { showMenu = true },
-            colors = bars
-        )
-    }
-
-    if (showTabs) {
-        TabSwitcherScreen(controller = controller, onDismiss = { showTabs = false })
-    }
-    if (showMenu) {
-        MenuSheet(
-            controller = controller,
-            onDismiss = { showMenu = false },
-            onOpenOverlay = {
-                showMenu = false
-                overlay = it
+            onShowTabs = {
+                showTabs = !showTabs
+                if (showTabs) showMenu = false
             },
-            onAddBookmark = { showAddBookmark = true }
+            onMenu = {
+                showMenu = !showMenu
+                if (showMenu) showTabs = false
+            },
+            colors = bars
         )
     }
     if (showAddBookmark) {
@@ -363,73 +373,77 @@ private fun BarIcon(
     }
 }
 
-/** Via 风格标签页：底部弹出的列表，底部与「+」新建空白页在同一块 */
-@OptIn(ExperimentalMaterial3Api::class)
+/** Via 风格标签页：贴在底部导航栏上方展开，底部与「+」新建空白页在同一块 */
 @Composable
-private fun TabSwitcherScreen(controller: BrowserController, onDismiss: () -> Unit) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.background,
-        dragHandle = null
-    ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .heightIn(max = 540.dp)
+private fun TabPanel(
+    controller: BrowserController,
+    colors: BarColors,
+    onDismiss: () -> Unit
+) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = colors.container,
+            shadowElevation = 12.dp
         ) {
-            Row(
+            Column(
                 Modifier
                     .fillMaxWidth()
-                    .padding(start = 20.dp, end = 8.dp, top = 14.dp, bottom = 2.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .heightIn(max = 370.dp)
             ) {
-                Text(
-                    "标签页",
-                    fontSize = 16.sp,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.weight(1f)
-                )
-                IconButton(onClick = onDismiss) {
-                    Icon(
-                        Icons.Filled.Close,
-                        contentDescription = "关闭",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp)
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, end = 8.dp, top = 10.dp, bottom = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "标签页",
+                        fontSize = 16.sp,
+                        color = colors.content,
+                        modifier = Modifier.weight(1f)
                     )
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "关闭",
+                            tint = colors.content.copy(alpha = 0.7f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
-            }
-            LazyColumn(Modifier.weight(1f, fill = false)) {
-                items(controller.tabList, key = { it.id }) { tab ->
-                    TabRow(
-                        tab = tab,
-                        onClick = {
-                            controller.switchTab(tab.id)
+                HorizontalDivider(color = colors.content.copy(alpha = 0.12f))
+                LazyColumn(Modifier.weight(1f, fill = false)) {
+                    items(controller.tabList, key = { it.id }) { tab ->
+                        TabRow(
+                            tab = tab,
+                            onClick = {
+                                controller.switchTab(tab.id)
+                                onDismiss()
+                            },
+                            onClose = { controller.closeTab(tab.id) }
+                        )
+                    }
+                }
+                HorizontalDivider(color = colors.content.copy(alpha = 0.12f))
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .clickable {
+                            controller.newTab()
                             onDismiss()
                         },
-                        onClose = { controller.closeTab(tab.id) }
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = "新建标签页",
+                        tint = colors.content,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .clickable {
-                        controller.newTab()
-                        onDismiss()
-                    },
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    Icons.Filled.Add,
-                    contentDescription = "新建标签页",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(20.dp)
-                )
             }
         }
     }
@@ -495,12 +509,12 @@ private val circlePalette = listOf(
     Color(0xFF6C4BD8), Color(0xFF4A6FA5), Color(0xFFB4543F)
 )
 
-private fun tabCircleColor(seed: String): Color {
+internal fun tabCircleColor(seed: String): Color {
     if (seed.isBlank()) return Color(0xFF9AA1AC)
     return circlePalette[Math.abs(seed.hashCode()) % circlePalette.size]
 }
 
-private fun tabInitial(title: String, url: String): String {
+internal fun tabInitial(title: String, url: String): String {
     val source = title.trim().ifBlank { url.trim() }
     if (source.isBlank()) return "新"
     return source.take(1).uppercase()
@@ -527,9 +541,8 @@ private fun menuIcon(item: MenuItem, isDark: Boolean): ImageVector = when (item)
 private fun menuLabel(item: MenuItem, isDark: Boolean): String =
     if (item == MenuItem.DARK_TOGGLE && isDark) "日间模式" else item.label
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MenuSheet(
+private fun MenuPanel(
     controller: BrowserController,
     onDismiss: () -> Unit,
     onOpenOverlay: (OverlayPage) -> Unit,
@@ -537,7 +550,6 @@ private fun MenuSheet(
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as App
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val systemDark = isSystemInDarkTheme()
     val isDark = when (ThemeController.mode) {
         1 -> false
@@ -546,6 +558,7 @@ private fun MenuSheet(
     }
 
     val order = remember(app.settings.menuOrder) { MenuConfig.currentOrder(app.settings) }
+    val rows = MenuConfig.rows(app.settings)
     val pageSize = MenuConfig.pageSize(app.settings)
     val pages = remember(order, pageSize) {
         order.chunked(pageSize).ifEmpty { listOf(emptyList()) }
@@ -576,71 +589,87 @@ private fun MenuSheet(
         }
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface
-    ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(bottom = 18.dp)
+    val rowHeight = 62.dp
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surface,
+            shadowElevation = 12.dp
         ) {
-            HorizontalPager(state = pagerState) { pageIndex ->
-                Column(Modifier.fillMaxWidth()) {
-                    pages[pageIndex].chunked(MenuConfig.COLUMNS).forEach { row ->
-                        Row(Modifier.fillMaxWidth()) {
-                            row.forEach { item ->
-                                Column(
-                                    Modifier
-                                        .weight(1f)
-                                        .clickable { run(item) }
-                                        .padding(vertical = 12.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    Icon(
-                                        menuIcon(item, isDark),
-                                        contentDescription = menuLabel(item, isDark),
-                                        tint = MaterialTheme.colorScheme.onSurface,
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                    Spacer(Modifier.height(6.dp))
-                                    Text(
-                                        menuLabel(item, isDark),
-                                        fontSize = 11.sp,
-                                        maxLines = 1,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+            Column(Modifier.fillMaxWidth()) {
+                HorizontalPager(state = pagerState) { pageIndex ->
+                    val rowsInPage = pages[pageIndex].chunked(MenuConfig.COLUMNS)
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(rowHeight * rows)
+                    ) {
+                        rowsInPage.forEach { row ->
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(rowHeight)
+                            ) {
+                                row.forEach { item ->
+                                    Column(
+                                        Modifier
+                                            .weight(1f)
+                                            .clickable { run(item) }
+                                            .padding(vertical = 10.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Icon(
+                                            menuIcon(item, isDark),
+                                            contentDescription = menuLabel(item, isDark),
+                                            tint = MaterialTheme.colorScheme.onSurface,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                        Spacer(Modifier.height(6.dp))
+                                        Text(
+                                            menuLabel(item, isDark),
+                                            fontSize = 11.sp,
+                                            maxLines = 1,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                if (row.size < MenuConfig.COLUMNS) {
+                                    repeat(MenuConfig.COLUMNS - row.size) {
+                                        Spacer(Modifier.weight(1f))
+                                    }
                                 }
                             }
-                            if (row.size < MenuConfig.COLUMNS) {
-                                repeat(MenuConfig.COLUMNS - row.size) { Spacer(Modifier.weight(1f)) }
-                            }
+                        }
+                        // 选项不足整页时补空行，保持菜单面板高度固定，不缩小
+                        repeat((rows - rowsInPage.size).coerceAtLeast(0)) {
+                            Spacer(Modifier.height(rowHeight))
                         }
                     }
                 }
-            }
-            if (pages.size > 1) {
-                Row(
+                Box(
                     Modifier
                         .fillMaxWidth()
-                        .padding(top = 6.dp),
-                    horizontalArrangement = Arrangement.Center
+                        .height(22.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    repeat(pages.size) { index ->
-                        Box(
-                            Modifier
-                                .padding(horizontal = 3.dp)
-                                .size(if (index == pagerState.currentPage) 7.dp else 5.dp)
-                                .background(
-                                    if (index == pagerState.currentPage) {
-                                        MaterialTheme.colorScheme.onSurface
-                                    } else {
-                                        MaterialTheme.colorScheme.outline
-                                    },
-                                    CircleShape
+                    if (pages.size > 1) {
+                        Row(horizontalArrangement = Arrangement.Center) {
+                            repeat(pages.size) { index ->
+                                Box(
+                                    Modifier
+                                        .padding(horizontal = 3.dp)
+                                        .size(if (index == pagerState.currentPage) 7.dp else 5.dp)
+                                        .background(
+                                            if (index == pagerState.currentPage) {
+                                                MaterialTheme.colorScheme.onSurface
+                                            } else {
+                                                MaterialTheme.colorScheme.outline
+                                            },
+                                            CircleShape
+                                        )
                                 )
-                        )
+                            }
+                        }
                     }
                 }
             }

@@ -12,15 +12,19 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -46,6 +50,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -58,26 +63,34 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.qingguang.browser.App
 import com.qingguang.browser.R
-import com.qingguang.browser.data.Bookmark
+import com.qingguang.browser.data.HomeItem
 import com.qingguang.browser.data.LocalPage
 import com.qingguang.browser.util.LocalSiteManager
 import com.qingguang.browser.web.BrowserController
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /** 首页：第 1 页是 Via 风格常驻主页，第 2 页是本地网页管理页，左右滑动切换 */
 @Composable
@@ -133,10 +146,16 @@ private fun HomeMainPage(
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as App
-    val bookmarks by app.database.bookmarkDao()
+    val scope = rememberCoroutineScope()
+    val homeItems by app.database.homeItemDao()
         .observeAll()
         .collectAsStateWithLifecycle(initialValue = emptyList())
+    val rootItems = homeItems.filter { it.parentId == 0L }.sortedBy { it.sortOrder }
     var query by remember { mutableStateOf("") }
+    var actionTarget by remember { mutableStateOf<HomeItem?>(null) }
+    var openFolder by remember { mutableStateOf<HomeItem?>(null) }
+    var renameTarget by remember { mutableStateOf<HomeItem?>(null) }
+    var renameName by remember { mutableStateOf("") }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -169,7 +188,8 @@ private fun HomeMainPage(
                     Modifier
                         .size(74.dp)
                         .clip(RoundedCornerShape(20.dp))
-                        .background(Color(0xFF1F2328)),
+                        .background(Color.White)
+                        .border(1.dp, Color(0xFFE3E8F0), RoundedCornerShape(20.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     Image(
@@ -265,47 +285,188 @@ private fun HomeMainPage(
         item {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "常用书签",
+                    "快捷入口",
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.weight(1f)
                 )
                 TextButton(onClick = { onOpenOverlay(OverlayPage.BOOKMARKS) }) {
-                    Text("全部", fontSize = 13.sp)
+                    Text("书签", fontSize = 13.sp)
                 }
             }
+            Text(
+                "长按图标后拖到另一个图标上，可以合并成一个分组。",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 10.dp)
+            )
         }
 
-        if (bookmarks.isEmpty()) {
+        if (rootItems.isEmpty()) {
             item {
                 Text(
-                    "还没有书签。打开网页后点底部菜单的「添加书签」，就会像手机桌面图标一样出现在这里。",
+                    "还没有首页快捷入口。添加书签时勾选「添加到首页」，或在书签长按菜单里选「添加到首页」。",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = 12.dp)
                 )
             }
         } else {
-            items(bookmarks.chunked(4), key = { row -> row.first().id.toString() }) { rowItems ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 14.dp),
-                    horizontalArrangement = Arrangement.Start
-                ) {
-                    rowItems.forEach { bookmark ->
-                        BookmarkIcon(bookmark = bookmark, modifier = Modifier.weight(1f)) {
-                            controller.loadUrl(bookmark.url)
+            item {
+                HomeShortcutGrid(
+                    items = rootItems,
+                    onOpen = { item ->
+                        if (item.isFolder) openFolder = item else controller.loadUrl(item.url)
+                    },
+                    onLongPress = { actionTarget = it },
+                    onMerge = { dragged, target ->
+                        scope.launch {
+                            val dao = app.database.homeItemDao()
+                            if (target.isFolder) {
+                                dao.moveToParent(dragged.id, target.id, 0)
+                            } else {
+                                val folderId = dao.insert(
+                                    HomeItem(
+                                        title = "分组",
+                                        isFolder = true,
+                                        parentId = 0,
+                                        sortOrder = minOf(target.sortOrder, dragged.sortOrder)
+                                    )
+                                )
+                                dao.moveToParent(target.id, folderId, 0)
+                                dao.moveToParent(dragged.id, folderId, 1)
+                            }
+                            toast(context, "已合并为分组")
                         }
                     }
-                    if (rowItems.size < 4) {
-                        repeat(4 - rowItems.size) { Spacer(Modifier.weight(1f)) }
-                    }
-                }
+                )
             }
             item { Spacer(Modifier.height(12.dp)) }
         }
+    }
+
+    actionTarget?.let { item ->
+        AlertDialog(
+            onDismissRequest = { actionTarget = null },
+            title = { Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            text = {
+                Column {
+                    HomeActionRow("打开") {
+                        actionTarget = null
+                        if (item.isFolder) openFolder = item else controller.loadUrl(item.url)
+                    }
+                    HomeActionRow("重命名") {
+                        actionTarget = null
+                        renameTarget = item
+                        renameName = item.title
+                    }
+                    if (item.isFolder) {
+                        HomeActionRow("解散分组") {
+                            actionTarget = null
+                            scope.launch {
+                                val dao = app.database.homeItemDao()
+                                homeItems.filter { it.parentId == item.id }.forEach {
+                                    dao.moveToParent(it.id, 0L, it.sortOrder)
+                                }
+                                dao.delete(item.id)
+                            }
+                        }
+                    } else {
+                        HomeActionRow("移出首页") {
+                            actionTarget = null
+                            scope.launch { app.database.homeItemDao().delete(item.id) }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { actionTarget = null }) { Text("关闭") }
+            }
+        )
+    }
+
+    openFolder?.let { folder ->
+        val children = homeItems.filter { it.parentId == folder.id }.sortedBy { it.sortOrder }
+        AlertDialog(
+            onDismissRequest = { openFolder = null },
+            title = { Text(folder.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            text = {
+                if (children.isEmpty()) {
+                    Text("这个分组里还没有图标。", fontSize = 13.sp)
+                } else {
+                    LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                        items(children, key = { it.id }) { child ->
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        openFolder = null
+                                        if (child.isFolder) openFolder = child
+                                        else controller.loadUrl(child.url)
+                                    }
+                                    .padding(vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    Modifier
+                                        .size(30.dp)
+                                        .clip(RoundedCornerShape(9.dp))
+                                        .background(colorFor(child.title.ifBlank { child.url })),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        child.title.take(1).uppercase().ifBlank { "书" },
+                                        fontSize = 13.sp,
+                                        color = Color.White
+                                    )
+                                }
+                                Spacer(Modifier.size(10.dp))
+                                Text(
+                                    child.title,
+                                    fontSize = 14.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { openFolder = null }) { Text("关闭") }
+            }
+        )
+    }
+
+    renameTarget?.let { item ->
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("重命名快捷入口") },
+            text = {
+                OutlinedTextField(
+                    value = renameName,
+                    onValueChange = { renameName = it },
+                    label = { Text("名称") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            app.database.homeItemDao().rename(item.id, renameName.trim())
+                        }
+                        renameTarget = null
+                    },
+                    enabled = renameName.isNotBlank()
+                ) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameTarget = null }) { Text("取消") }
+            }
+        )
     }
 }
 
@@ -510,28 +671,173 @@ private fun AppIconEntry(
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun BookmarkIcon(bookmark: Bookmark, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun HomeShortcutGrid(
+    items: List<HomeItem>,
+    onOpen: (HomeItem) -> Unit,
+    onLongPress: (HomeItem) -> Unit,
+    onMerge: (HomeItem, HomeItem) -> Unit
+) {
+    var gridSize by remember { mutableStateOf(IntSize.Zero) }
+    var dragging by remember { mutableStateOf<HomeItem?>(null) }
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+    var dragStart by remember { mutableStateOf(Offset.Zero) }
+    var hoverId by remember { mutableStateOf<Long?>(null) }
+    val density = LocalDensity.current
+    val gap = 4.dp
+    val rowHeight = 82.dp
+
+    fun targetAt(pos: Offset): HomeItem? {
+        if (gridSize.width <= 0) return null
+        val gapPx = with(density) { gap.toPx() }
+        val rowPx = with(density) { rowHeight.toPx() }
+        val cellWidth = (gridSize.width - gapPx * 3f) / 4f
+        if (cellWidth <= 0f) return null
+        val column = (pos.x / (cellWidth + gapPx)).toInt().coerceIn(0, 3)
+        val row = (pos.y / rowPx).toInt().coerceAtLeast(0)
+        return items.getOrNull(row * 4 + column)
+    }
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .onSizeChanged { gridSize = it }
+            .pointerInput(items) {
+                val tapSlop = with(density) { 12.dp.toPx() }
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { start ->
+                        val target = targetAt(start)
+                        if (target != null) {
+                            dragging = target
+                            dragStart = start
+                            dragOffset = Offset.Zero
+                            hoverId = null
+                        }
+                    },
+                    onDrag = { change, amount ->
+                        if (dragging == null) {
+                            change.consume()
+                            return@detectDragGesturesAfterLongPress
+                        }
+                        change.consume()
+                        dragOffset += amount
+                        hoverId = targetAt(dragStart + dragOffset)?.id
+                    },
+                    onDragEnd = {
+                        val dragged = dragging
+                        val target = hoverId?.let { id -> items.firstOrNull { it.id == id } }
+                        if (dragged != null && target != null && target.id != dragged.id) {
+                            onMerge(dragged, target)
+                        } else if (dragged != null && dragOffset.getDistance() < tapSlop) {
+                            onLongPress(dragged)
+                        }
+                        dragging = null
+                        dragOffset = Offset.Zero
+                        hoverId = null
+                    },
+                    onDragCancel = {
+                        dragging = null
+                        dragOffset = Offset.Zero
+                        hoverId = null
+                    }
+                )
+            }
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            items.chunked(4).forEach { rowItems ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(rowHeight),
+                    horizontalArrangement = Arrangement.spacedBy(gap)
+                ) {
+                    rowItems.forEach { item ->
+                        val isDragging = dragging?.id == item.id
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .zIndex(if (isDragging) 1f else 0f)
+                        ) {
+                            HomeShortcutIcon(
+                                item = item,
+                                highlight = !isDragging && hoverId == item.id,
+                                clickEnabled = dragging == null,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .offset {
+                                        if (isDragging) {
+                                            IntOffset(
+                                                dragOffset.x.roundToInt(),
+                                                dragOffset.y.roundToInt()
+                                            )
+                                        } else {
+                                            IntOffset.Zero
+                                        }
+                                    },
+                                onClick = { onOpen(item) }
+                            )
+                        }
+                    }
+                    repeat(4 - rowItems.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeShortcutIcon(
+    item: HomeItem,
+    highlight: Boolean,
+    clickEnabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
     Column(
-        modifier = modifier.clickable(onClick = onClick),
-        horizontalAlignment = Alignment.CenterHorizontally
+        modifier = modifier.clickable(enabled = clickEnabled, onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
     ) {
         Box(
             Modifier
                 .size(52.dp)
                 .clip(RoundedCornerShape(17.dp))
-                .background(colorFor(bookmark.title.ifBlank { bookmark.url })),
+                .background(
+                    if (item.isFolder) {
+                        Color(0xFF2E7CF6)
+                    } else {
+                        colorFor(item.title.ifBlank { item.url })
+                    }
+                )
+                .then(
+                    if (highlight) {
+                        Modifier.border(2.dp, MaterialTheme.colorScheme.secondary, RoundedCornerShape(17.dp))
+                    } else {
+                        Modifier
+                    }
+                ),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                bookmark.title.trim().take(1).uppercase().ifBlank { "书" },
-                fontSize = 20.sp,
-                color = Color.White
-            )
+            if (item.isFolder) {
+                Icon(
+                    Icons.Filled.FolderOpen,
+                    contentDescription = item.title,
+                    tint = Color.White,
+                    modifier = Modifier.size(24.dp)
+                )
+            } else {
+                Text(
+                    item.title.trim().take(1).uppercase().ifBlank { "书" },
+                    fontSize = 20.sp,
+                    color = Color.White
+                )
+            }
         }
-        Spacer(Modifier.height(7.dp))
+        Spacer(Modifier.height(6.dp))
         Text(
-            bookmark.title,
+            item.title,
             fontSize = 11.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -539,6 +845,23 @@ private fun BookmarkIcon(bookmark: Bookmark, modifier: Modifier = Modifier, onCl
             textAlign = TextAlign.Center
         )
     }
+}
+
+@Composable
+private fun HomeActionRow(label: String, onClick: () -> Unit) {
+    Text(
+        label,
+        fontSize = 15.sp,
+        color = if (label.startsWith("移出") || label.startsWith("解散")) {
+            MaterialTheme.colorScheme.error
+        } else {
+            MaterialTheme.colorScheme.onSurface
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp)
+    )
 }
 
 @Composable
