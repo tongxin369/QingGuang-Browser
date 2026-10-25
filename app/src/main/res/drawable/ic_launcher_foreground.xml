@@ -1,0 +1,28 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 外圈：浏览器外壳 -->
+    <path
+        android:pathData="M54,54m-27,0a27,27 0 1,1 54,0a27,27 0 1,1 -54,0"
+        android:strokeWidth="3.5"
+        android:strokeColor="#35D0BA"
+        android:strokeLineCap="round" />
+    <!-- 赤道 -->
+    <path
+        android:pathData="M27,54h54"
+        android:strokeWidth="3"
+        android:strokeColor="#35D0BA"
+        android:strokeLineCap="round" />
+    <!-- 经线 -->
+    <path
+        android:pathData="M54,27C40,27 40,81 54,81C68,81 68,27 54,27Z"
+        android:strokeWidth="3"
+        android:strokeColor="#7FE3D6"
+        android:strokeLineCap="round" />
+    <!-- 光点 -->
+    <path
+        android:pathData="M54,54m-4,0a4,4 0 1,1 8,0a4,4 0 1,1 -8,0"
+        android:fillColor="#FFD166" />
+</vector>
