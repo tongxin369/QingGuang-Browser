@@ -801,11 +801,21 @@ private fun HistoryPage(controller: BrowserController, onClose: () -> Unit) {
     val history by app.database.historyDao()
         .observeRecent()
         .collectAsStateWithLifecycle(initialValue = emptyList())
-    // 历史图标与书签保持一致：同一 URL 复用书签的自定义样式
+    // 历史图标与书签/首页保持一致：同一 URL 复用自定义样式（书签优先）
     val bookmarks by app.database.bookmarkDao()
         .observeAll()
         .collectAsStateWithLifecycle(initialValue = emptyList())
-    val iconStyles = remember(bookmarks) { bookmarks.associateBy { it.url } }
+    val homeItems by app.database.homeItemDao()
+        .observeAll()
+        .collectAsStateWithLifecycle(initialValue = emptyList())
+    val iconStyles = remember(bookmarks, homeItems) {
+        buildMap {
+            homeItems.filter { it.url.isNotBlank() && !it.isFolder }.forEach {
+                put(it.url, it.iconColor to it.iconText)
+            }
+            bookmarks.forEach { put(it.url, it.iconColor to it.iconText) }
+        }
+    }
     var confirmClear by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
@@ -830,8 +840,8 @@ private fun HistoryPage(controller: BrowserController, onClose: () -> Unit) {
                             SiteIconBadge(
                                 title = item.title,
                                 url = item.url,
-                                iconColor = style?.iconColor,
-                                iconText = style?.iconText,
+                                iconColor = style?.first,
+                                iconText = style?.second,
                                 size = 34.dp,
                                 corner = 10.dp
                             )
