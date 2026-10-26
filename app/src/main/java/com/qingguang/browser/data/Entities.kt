@@ -38,7 +38,9 @@ data class HomeItem(
     val iconColor: Int? = null,
     val iconText: String? = null,
     /** 所在首页分页：0 第一页，1 第二页（仅对 parentId = 0 的根图标有效） */
-    val page: Int = 0
+    val page: Int = 0,
+    /** 页内格子位置（4 列）：-1 表示未指定，仅对根图标有效 */
+    val slot: Int = -1
 )
 
 @Entity(tableName = "history")

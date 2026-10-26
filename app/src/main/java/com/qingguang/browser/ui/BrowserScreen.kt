@@ -123,6 +123,7 @@ private fun rememberBarColors(controller: BrowserController): BarColors {
 @Composable
 fun BrowserScreen(controller: BrowserController) {
     val focusManager = LocalFocusManager.current
+    val app = LocalContext.current.applicationContext as App
 
     var address by remember { mutableStateOf("") }
     var overlay by remember { mutableStateOf<OverlayPage?>(null) }
@@ -173,7 +174,12 @@ fun BrowserScreen(controller: BrowserController) {
         Box(Modifier.weight(1f)) {
             WebViewHost(controller)
             if (controller.showHome) {
-                HomePage(controller = controller, onOpenOverlay = { overlay = it })
+                HomePage(
+                    controller = controller,
+                    onOpenOverlay = { overlay = it },
+                    pageCount = app.settings.homePageCount,
+                    autoCompact = app.settings.homeAutoCompact
+                )
             }
             // Via 风格：标签列表与功能菜单都贴在底部导航栏上方展开
             if (showTabs) {

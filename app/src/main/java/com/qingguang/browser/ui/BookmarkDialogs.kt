@@ -173,9 +173,23 @@ fun AddBookmarkDialog(
                         if (addToHome) {
                             val homeDao = app.database.homeItemDao()
                             if (homeDao.countOnHome(url.trim()) == 0) {
-                                val page = if (homeDao.countRootOnPage(0) < HOME_PAGE_CAPACITY) 0 else 1
+                                var page = 0
+                                val lastPage = (app.settings.homePageCount - 1).coerceAtLeast(0)
+                                while (page < lastPage &&
+                                    homeDao.countRootOnPage(page) >= HOME_PAGE_CAPACITY
+                                ) {
+                                    page++
+                                }
+                                val used = homeDao.slotsOnPage(page).toSet()
+                                val slot = (0 until HOME_PAGE_CAPACITY)
+                                    .firstOrNull { it !in used } ?: -1
                                 homeDao.insert(
-                                    HomeItem(title = finalTitle, url = url.trim(), page = page)
+                                    HomeItem(
+                                        title = finalTitle,
+                                        url = url.trim(),
+                                        page = page,
+                                        slot = slot
+                                    )
                                 )
                             }
                         }

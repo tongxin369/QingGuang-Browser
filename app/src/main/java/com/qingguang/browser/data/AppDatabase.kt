@@ -12,7 +12,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         Bookmark::class, BookmarkFolder::class, HomeItem::class, HistoryItem::class,
         LocalPage::class, DownloadRecord::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -33,9 +33,25 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "qingguang.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
-                    .build().also { instance = it }
+                ).addMigrations(
+                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6
+                ).build().also { instance = it }
             }
+
+        /** v6：首页快捷入口支持自由摆放（页内格子位置） */
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE home_items ADD COLUMN slot INTEGER NOT NULL DEFAULT -1")
+                db.execSQL(
+                    "UPDATE home_items SET slot = (" +
+                        "SELECT COUNT(*) FROM home_items h2 " +
+                        "WHERE h2.parentId = home_items.parentId AND h2.page = home_items.page " +
+                        "AND (h2.sortOrder < home_items.sortOrder " +
+                        "OR (h2.sortOrder = home_items.sortOrder AND h2.id < home_items.id))" +
+                        ") WHERE parentId = 0"
+                )
+            }
+        }
 
         /** v5：首页快捷入口支持分页 */
         private val MIGRATION_4_5 = object : Migration(4, 5) {

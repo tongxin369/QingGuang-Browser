@@ -90,6 +90,19 @@ interface HomeItemDao {
     @Query("UPDATE home_items SET page = :page, sortOrder = :sortOrder WHERE id = :id")
     suspend fun moveToPage(id: Long, page: Int, sortOrder: Int)
 
+    /** 页内已占用的格子位置，用于自由摆放时寻找空位 */
+    @Query("SELECT slot FROM home_items WHERE parentId = 0 AND page = :page")
+    suspend fun slotsOnPage(page: Int): List<Int>
+
+    @Query("UPDATE home_items SET page = :page, slot = :slot, sortOrder = :sortOrder WHERE id = :id")
+    suspend fun place(id: Long, page: Int, slot: Int, sortOrder: Int)
+
+    @Query("UPDATE home_items SET slot = :slot WHERE id = :id")
+    suspend fun updateSlot(id: Long, slot: Int)
+
+    @Query("UPDATE home_items SET sortOrder = :sortOrder WHERE id = :id")
+    suspend fun updateSortOrder(id: Long, sortOrder: Int)
+
     @Query("UPDATE home_items SET iconColor = :color, iconText = :text WHERE id = :id")
     suspend fun updateIcon(id: Long, color: Int?, text: String?)
 

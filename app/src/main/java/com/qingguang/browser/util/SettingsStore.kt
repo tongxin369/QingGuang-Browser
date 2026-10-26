@@ -32,6 +32,16 @@ class SettingsStore(context: Context) {
         get() = prefs.getInt(KEY_GLOBAL_BACKUP_KEEP, 10).coerceIn(1, 50)
         set(value) = prefs.edit().putInt(KEY_GLOBAL_BACKUP_KEEP, value.coerceIn(1, 50)).apply()
 
+    /** 首页快捷入口页数（含第一页），默认 2 页 */
+    var homePageCount: Int
+        get() = prefs.getInt(KEY_HOME_PAGE_COUNT, 2).coerceIn(2, 6)
+        set(value) = prefs.edit().putInt(KEY_HOME_PAGE_COUNT, value.coerceIn(2, 6)).apply()
+
+    /** 快捷入口是否自动补位（关闭后拖动可以留空，位置不自动挤拢） */
+    var homeAutoCompact: Boolean
+        get() = prefs.getBoolean(KEY_HOME_AUTO_COMPACT, true)
+        set(value) = prefs.edit().putBoolean(KEY_HOME_AUTO_COMPACT, value).apply()
+
     /** 字体缩放百分比，100 为基准 */
     var textZoom: Int
         get() = prefs.getInt(KEY_TEXT_ZOOM, 100)
@@ -78,6 +88,8 @@ class SettingsStore(context: Context) {
         private const val KEY_AUTO_BACKUP_GLOBAL = "auto_backup_global"
         private const val KEY_LAST_GLOBAL_BACKUP = "last_global_backup"
         private const val KEY_GLOBAL_BACKUP_KEEP = "global_backup_keep"
+        private const val KEY_HOME_PAGE_COUNT = "home_page_count"
+        private const val KEY_HOME_AUTO_COMPACT = "home_auto_compact"
         private const val KEY_TEXT_ZOOM = "text_zoom"
         private const val KEY_DESKTOP_MODE = "desktop_mode"
         private const val KEY_DARK_MODE = "dark_mode"

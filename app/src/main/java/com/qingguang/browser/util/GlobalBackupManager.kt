@@ -100,7 +100,8 @@ class GlobalBackupManager(
                             createdAt = o.optLong("createdAt", System.currentTimeMillis()),
                             iconColor = o.optNullableInt("iconColor"),
                             iconText = o.optNullableString("iconText"),
-                            page = o.optInt("page", 0)
+                            page = o.optInt("page", 0),
+                            slot = o.optInt("slot", -1)
                         )
                     )
                 }
@@ -195,6 +196,8 @@ class GlobalBackupManager(
             settings.autoBackupGlobal = o.optBoolean("autoBackupGlobal", settings.autoBackupGlobal)
         }
         settings.globalBackupKeep = o.optInt("globalBackupKeep", settings.globalBackupKeep)
+        settings.homePageCount = o.optInt("homePageCount", settings.homePageCount)
+        settings.homeAutoCompact = o.optBoolean("homeAutoCompact", settings.homeAutoCompact)
     }
 
     companion object {
@@ -230,6 +233,7 @@ private fun HomeItem.toJson(): JSONObject = JSONObject().apply {
     put("iconColor", iconColor)
     put("iconText", iconText)
     put("page", page)
+    put("slot", slot)
 }
 
 private fun HistoryItem.toJson(): JSONObject = JSONObject().apply {
@@ -258,6 +262,8 @@ private fun SettingsStore.toJson(): JSONObject = JSONObject().apply {
     put("autoBackup", autoBackup)
     put("autoBackupGlobal", autoBackupGlobal)
     put("globalBackupKeep", globalBackupKeep)
+    put("homePageCount", homePageCount)
+    put("homeAutoCompact", homeAutoCompact)
 }
 
 private fun JSONObject.optNullableInt(key: String): Int? =

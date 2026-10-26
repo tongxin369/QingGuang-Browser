@@ -378,12 +378,22 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                     scope.launch {
                         val dao = app.database.homeItemDao()
                         if (dao.countOnHome(bookmark.url) == 0) {
-                            val page = if (dao.countRootOnPage(0) < HOME_PAGE_CAPACITY) 0 else 1
+                            var page = 0
+                            val lastPage = (app.settings.homePageCount - 1).coerceAtLeast(0)
+                            while (page < lastPage &&
+                                dao.countRootOnPage(page) >= HOME_PAGE_CAPACITY
+                            ) {
+                                page++
+                            }
+                            val used = dao.slotsOnPage(page).toSet()
+                            val slot = (0 until HOME_PAGE_CAPACITY)
+                                .firstOrNull { it !in used } ?: -1
                             dao.insert(
                                 com.qingguang.browser.data.HomeItem(
                                     title = bookmark.title,
                                     url = bookmark.url,
-                                    page = page
+                                    page = page,
+                                    slot = slot
                                 )
                             )
                             Toast.makeText(context, "已添加到首页", Toast.LENGTH_SHORT).show()

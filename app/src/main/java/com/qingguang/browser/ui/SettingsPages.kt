@@ -29,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
@@ -77,6 +78,7 @@ private enum class SettingsSection(
     APPEARANCE("界面外观", "主题、工具栏配色、网页深浅色", Icons.Filled.Palette),
     BROWSING("浏览设置", "搜索引擎、字体大小、电脑模式", Icons.Filled.Language),
     MENU("菜单定制", "功能菜单排序与每页行数", Icons.Filled.Apps),
+    HOME("首页", "快捷入口页数与摆放方式", Icons.Filled.Home),
     DATA("数据与备份", "自动备份、备份目录、清理数据", Icons.Filled.CloudUpload),
     PERMISSION("权限", "定位等系统权限", Icons.Filled.LocationOn),
     ABOUT("关于", "版本与产品信息", Icons.Filled.Info)
@@ -102,6 +104,7 @@ private fun SettingsDirectory(onOpen: (SettingsSection) -> Unit) {
         SettingsSectionRow(SettingsSection.BROWSING, onOpen)
         SettingsGroup("功能与数据")
         SettingsSectionRow(SettingsSection.MENU, onOpen)
+        SettingsSectionRow(SettingsSection.HOME, onOpen)
         SettingsSectionRow(SettingsSection.DATA, onOpen)
         SettingsGroup("系统")
         SettingsSectionRow(SettingsSection.PERMISSION, onOpen)
@@ -192,6 +195,7 @@ private fun SettingsDetail(
                 SettingsSection.APPEARANCE -> AppearanceSettings(controller)
                 SettingsSection.BROWSING -> BrowsingSettings(controller)
                 SettingsSection.MENU -> MenuSettings()
+                SettingsSection.HOME -> HomeSettings()
                 SettingsSection.DATA -> DataSettings(controller)
                 SettingsSection.PERMISSION -> PermissionSettings()
                 SettingsSection.ABOUT -> AboutSettings()
@@ -431,6 +435,50 @@ private fun MenuSettings() {
         },
         modifier = Modifier.padding(start = 10.dp)
     ) { Text("恢复默认排序") }
+}
+
+@Composable
+private fun HomeSettings() {
+    val context = LocalContext.current
+    val app = context.applicationContext as App
+    var pages by remember { mutableStateOf(app.settings.homePageCount) }
+    var compact by remember { mutableStateOf(app.settings.homeAutoCompact) }
+
+    SettingsGroup("快捷入口页数（每页 3 行 × 4 个）")
+    Row(
+        Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        (2..6).forEach { value ->
+            FilterChip(
+                selected = pages == value,
+                onClick = {
+                    pages = value
+                    app.settings.homePageCount = value
+                },
+                label = { Text("$value 页") }
+            )
+        }
+    }
+    Text(
+        "减少页数不会删除图标；超出页数的图标会暂时隐藏，增加页数后恢复。",
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)
+    )
+
+    SettingsGroup("摆放方式")
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    SettingsSwitchRow("自动补位", compact) { value ->
+        compact = value
+        app.settings.homeAutoCompact = value
+    }
+    Text(
+        "开启：删除或移动图标后自动挤拢排列；关闭：可以拖动到任意空格，保留空位。",
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)
+    )
 }
 
 @Composable
