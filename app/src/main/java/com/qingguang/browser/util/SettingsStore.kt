@@ -17,6 +17,16 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_AUTO_BACKUP, true)
         set(value) = prefs.edit().putBoolean(KEY_AUTO_BACKUP, value).apply()
 
+    /** 退出/切后台时是否自动备份全局数据（设置、书签、快捷入口、历史等） */
+    var autoBackupGlobal: Boolean
+        get() = prefs.getBoolean(KEY_AUTO_BACKUP_GLOBAL, true)
+        set(value) = prefs.edit().putBoolean(KEY_AUTO_BACKUP_GLOBAL, value).apply()
+
+    /** 最近一次全局自动备份时间，用于限制自动备份频率 */
+    var lastGlobalBackupAt: Long
+        get() = prefs.getLong(KEY_LAST_GLOBAL_BACKUP, 0L)
+        set(value) = prefs.edit().putLong(KEY_LAST_GLOBAL_BACKUP, value).apply()
+
     /** 字体缩放百分比，100 为基准 */
     var textZoom: Int
         get() = prefs.getInt(KEY_TEXT_ZOOM, 100)
@@ -60,6 +70,8 @@ class SettingsStore(context: Context) {
     companion object {
         private const val KEY_SEARCH_ENGINE = "search_engine"
         private const val KEY_AUTO_BACKUP = "auto_backup"
+        private const val KEY_AUTO_BACKUP_GLOBAL = "auto_backup_global"
+        private const val KEY_LAST_GLOBAL_BACKUP = "last_global_backup"
         private const val KEY_TEXT_ZOOM = "text_zoom"
         private const val KEY_DESKTOP_MODE = "desktop_mode"
         private const val KEY_DARK_MODE = "dark_mode"

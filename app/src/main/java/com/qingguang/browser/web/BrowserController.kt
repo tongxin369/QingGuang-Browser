@@ -296,6 +296,8 @@ class BrowserController(private val activity: Activity) {
                     recordHistory(view)
                     refresh()
                     updatePageTheme(view)
+                    // Android WebView 不实现 File System Access API，注入兼容实现，网页可多选文件
+                    view.evaluateJavascript(PICKER_POLYFILL_JS, null)
                     // 页面加载完成后自动备份一次，降低"交互后直接退出"导致的数据丢失风险
                     if (app.settings.autoBackup && url != null && !url.startsWith("about:")) {
                         app.backups.backupSite(view, url, view.title ?: url) { _, _ -> }
@@ -572,5 +574,19 @@ class BrowserController(private val activity: Activity) {
                 "if(!c&&document.body){c=h(getComputedStyle(document.body).backgroundColor);}" +
                 "if(!c&&document.documentElement){c=h(getComputedStyle(document.documentElement).backgroundColor);}" +
                 "return c;}catch(e){return '';}})()"
+
+        /** Android WebView 没有 File System Access API，注入基于 input[type=file] 的兼容实现 */
+        private const val PICKER_POLYFILL_JS =
+            "(function(){if(window.showOpenFilePicker)return;" +
+                "window.showOpenFilePicker=function(options){return new Promise(function(resolve){" +
+                "var input=document.createElement('input');input.type='file';" +
+                "input.multiple=!!(options&&options.multiple);input.style.display='none';" +
+                "if(options&&options.types){var accepts=[];" +
+                "try{options.types.forEach(function(t){if(t&&t.accept){Object.keys(t.accept).forEach(function(k){accepts.push(k);});}});}catch(e){}" +
+                "if(accepts.length)input.accept=accepts.join(',');}" +
+                "document.body.appendChild(input);" +
+                "input.addEventListener('change',function(){" +
+                "var handles=Array.prototype.map.call(input.files||[],function(f){return {kind:'file',name:f.name,getFile:function(){return Promise.resolve(f);}};});" +
+                "input.remove();resolve(handles);});input.click();});};})()"
     }
 }

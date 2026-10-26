@@ -18,7 +18,11 @@ data class Bookmark(
     val title: String,
     val url: String,
     val folderId: Long = 0,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    /** 自定义图标颜色（ARGB）；null 表示按标题自动配色 */
+    val iconColor: Int? = null,
+    /** 自定义图标文字（1-2 字）；null 表示自动取标题首字 */
+    val iconText: String? = null
 )
 
 /** 首页快捷入口：isFolder=false 为网页图标；为 true 时作为分组合并多个图标（parentId 指向它） */
@@ -30,7 +34,9 @@ data class HomeItem(
     val parentId: Long = 0,
     val isFolder: Boolean = false,
     val sortOrder: Int = 0,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val iconColor: Int? = null,
+    val iconText: String? = null
 )
 
 @Entity(tableName = "history")

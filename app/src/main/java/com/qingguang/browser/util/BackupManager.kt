@@ -71,11 +71,12 @@ class BackupManager(
         return tree.takeIf { it.exists() && it.canWrite() }
     }
 
-    suspend fun listBackups(): List<BackupInfo> = withContext(Dispatchers.IO) {
+    suspend fun listBackups(global: Boolean = false): List<BackupInfo> = withContext(Dispatchers.IO) {
         val root = customRoot()
         if (root != null) {
             root.listFiles()
                 .filter { it.isFile && it.name?.endsWith(".json") == true }
+                .filter { isGlobalName(it.name.orEmpty()) == global }
                 .map { doc ->
                     val name = doc.name ?: ""
                     val parts = name.removeSuffix(".json").split("@")
@@ -91,6 +92,7 @@ class BackupManager(
         } else {
             defaultDir.listFiles()
                 ?.filter { it.isFile && it.extension == "json" }
+                ?.filter { isGlobalName(it.name) == global }
                 ?.map {
                     val parts = it.nameWithoutExtension.split("@")
                     BackupInfo(
@@ -105,6 +107,23 @@ class BackupManager(
                 ?: emptyList()
         }
     }
+
+    /** 写入一个 JSON 备份文件（全局数据备份复用同一目录） */
+    fun writeText(fileName: String, text: String): Boolean = runCatching {
+        val root = customRoot()
+        if (root != null) {
+            val target = root.findFile(fileName)
+                ?: root.createFile("application/json", fileName)
+                ?: error("无法在所选目录创建文件")
+            context.contentResolver.openOutputStream(target.uri)?.use {
+                it.write(text.toByteArray(Charsets.UTF_8))
+            } ?: error("无法写入所选目录")
+        } else {
+            File(defaultDir, fileName).writeText(text, Charsets.UTF_8)
+        }
+    }.isSuccess
+
+    private fun isGlobalName(name: String): Boolean = name.startsWith(GLOBAL_PREFIX)
 
     /** 导出当前页面的 Cookie 与 localStorage。回调在主线程。 */
     fun backupSite(
@@ -197,7 +216,7 @@ class BackupManager(
         }
     }.getOrDefault(false)
 
-    private fun readText(info: BackupInfo): String {
+    fun readText(info: BackupInfo): String {
         if (info.uri != null) {
             return context.contentResolver.openInputStream(info.uri)?.bufferedReader()?.use { it.readText() }
                 ?: error("无法读取备份文件")
@@ -212,6 +231,9 @@ class BackupManager(
     }
 
     companion object {
+        /** 全局数据备份文件名的固定前缀，与站点备份区分 */
+        const val GLOBAL_PREFIX = "global@"
+
         private const val EXPORT_LOCAL_STORAGE_JS =
             "(function(){var o={};try{for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);" +
                 "o[k]=localStorage.getItem(k);}}catch(e){}return JSON.stringify(o);})()"

@@ -31,11 +31,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.BookmarkBorder
@@ -156,6 +158,7 @@ private fun HomeMainPage(
     var openFolder by remember { mutableStateOf<HomeItem?>(null) }
     var renameTarget by remember { mutableStateOf<HomeItem?>(null) }
     var renameName by remember { mutableStateOf("") }
+    var iconTarget by remember { mutableStateOf<HomeItem?>(null) }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -373,9 +376,23 @@ private fun HomeMainPage(
                             }
                         }
                     } else {
-                        HomeActionRow("移出首页") {
+                        HomeActionRow("自定义图标") {
                             actionTarget = null
-                            scope.launch { app.database.homeItemDao().delete(item.id) }
+                            iconTarget = item
+                        }
+                        if (item.parentId != 0L) {
+                            HomeActionRow("移出分组") {
+                                actionTarget = null
+                                scope.launch {
+                                    app.database.homeItemDao()
+                                        .moveToParent(item.id, 0L, item.sortOrder)
+                                }
+                            }
+                        } else {
+                            HomeActionRow("移出首页") {
+                                actionTarget = null
+                                scope.launch { app.database.homeItemDao().delete(item.id) }
+                            }
                         }
                     }
                 }
@@ -395,42 +412,43 @@ private fun HomeMainPage(
                 if (children.isEmpty()) {
                     Text("这个分组里还没有图标。", fontSize = 13.sp)
                 } else {
-                    LazyColumn(Modifier.heightIn(max = 360.dp)) {
-                        items(children, key = { it.id }) { child ->
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        openFolder = null
-                                        if (child.isFolder) openFolder = child
-                                        else controller.loadUrl(child.url)
+                    // 分组内容也使用快捷入口的图标网格样式
+                    Column(
+                        Modifier
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        HomeShortcutGrid(
+                            items = children,
+                            onOpen = { child ->
+                                openFolder = null
+                                if (child.isFolder) openFolder = child
+                                else controller.loadUrl(child.url)
+                            },
+                            onLongPress = { child ->
+                                openFolder = null
+                                actionTarget = child
+                            },
+                            onMerge = { dragged, target ->
+                                scope.launch {
+                                    val dao = app.database.homeItemDao()
+                                    if (target.isFolder) {
+                                        dao.moveToParent(dragged.id, target.id, 0)
+                                    } else {
+                                        val nestedId = dao.insert(
+                                            HomeItem(
+                                                title = "分组",
+                                                isFolder = true,
+                                                parentId = folder.id,
+                                                sortOrder = minOf(target.sortOrder, dragged.sortOrder)
+                                            )
+                                        )
+                                        dao.moveToParent(target.id, nestedId, 0)
+                                        dao.moveToParent(dragged.id, nestedId, 1)
                                     }
-                                    .padding(vertical = 9.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    Modifier
-                                        .size(30.dp)
-                                        .clip(RoundedCornerShape(9.dp))
-                                        .background(colorFor(child.title.ifBlank { child.url })),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        child.title.take(1).uppercase().ifBlank { "书" },
-                                        fontSize = 13.sp,
-                                        color = Color.White
-                                    )
                                 }
-                                Spacer(Modifier.size(10.dp))
-                                Text(
-                                    child.title,
-                                    fontSize = 14.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
                             }
-                        }
+                        )
                     }
                 }
             },
@@ -465,6 +483,26 @@ private fun HomeMainPage(
             },
             dismissButton = {
                 TextButton(onClick = { renameTarget = null }) { Text("取消") }
+            }
+        )
+    }
+    iconTarget?.let { item ->
+        IconStyleDialog(
+            title = item.title,
+            initialColor = item.iconColor,
+            initialText = item.iconText,
+            onDismiss = { iconTarget = null },
+            onSave = { color, text ->
+                iconTarget = null
+                scope.launch {
+                    val homeDao = app.database.homeItemDao()
+                    homeDao.updateIcon(item.id, color, text)
+                    if (item.url.isNotBlank()) {
+                        // 与书签页、历史记录同步同一 URL 的图标样式
+                        homeDao.updateIconByUrl(item.url, color, text)
+                        app.database.bookmarkDao().updateIconByUrl(item.url, color, text)
+                    }
+                }
             }
         )
     }
@@ -800,36 +838,42 @@ private fun HomeShortcutIcon(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Box(
-            Modifier
-                .size(52.dp)
-                .clip(RoundedCornerShape(17.dp))
-                .background(
-                    if (item.isFolder) {
-                        Color(0xFF2E7CF6)
-                    } else {
-                        colorFor(item.title.ifBlank { item.url })
-                    }
-                )
-                .then(
-                    if (highlight) {
-                        Modifier.border(2.dp, MaterialTheme.colorScheme.secondary, RoundedCornerShape(17.dp))
-                    } else {
-                        Modifier
-                    }
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            if (item.isFolder) {
-                Icon(
-                    Icons.Filled.FolderOpen,
-                    contentDescription = item.title,
-                    tint = Color.White,
-                    modifier = Modifier.size(24.dp)
-                )
-            } else {
+        if (item.isFolder) {
+            Box(
+                Modifier
+                    .size(52.dp)
+                    .then(
+                        if (highlight) {
+                            Modifier.border(2.dp, MaterialTheme.colorScheme.secondary, RoundedCornerShape(16.dp))
+                        } else {
+                            Modifier
+                        }
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                FolderGlyph(Modifier.size(52.dp))
+            }
+        } else {
+            Box(
+                Modifier
+                    .size(52.dp)
+                    .clip(RoundedCornerShape(17.dp))
+                    .background(
+                        item.iconColor?.let { Color(it) }
+                            ?: siteIconColor(item.title.ifBlank { item.url })
+                    )
+                    .then(
+                        if (highlight) {
+                            Modifier.border(2.dp, MaterialTheme.colorScheme.secondary, RoundedCornerShape(17.dp))
+                        } else {
+                            Modifier
+                        }
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
                 Text(
-                    item.title.trim().take(1).uppercase().ifBlank { "书" },
+                    item.iconText?.trim()?.take(2)?.takeIf { it.isNotBlank() }
+                        ?: siteIconText(item.title, item.url),
                     fontSize = 20.sp,
                     color = Color.White
                 )
@@ -879,14 +923,6 @@ private fun ActionChip(label: String, onClick: () -> Unit) {
         }
     }
 }
-
-private val iconPalette = listOf(
-    Color(0xFF5B8C5A), Color(0xFFC7A34A), Color(0xFF8E5A6E), Color(0xFF6C4BD8),
-    Color(0xFF4A6FA5), Color(0xFFB4543F), Color(0xFF3F7E8C), Color(0xFF7A6C57)
-)
-
-private fun colorFor(seed: String): Color =
-    iconPalette[Math.abs(seed.hashCode()) % iconPalette.size]
 
 private fun queryDisplayName(context: Context, uri: Uri): String? {
     var name: String? = null

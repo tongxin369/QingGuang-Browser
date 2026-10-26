@@ -150,6 +150,7 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
     var renameName by remember { mutableStateOf("") }
     var deleteFolder by remember { mutableStateOf<com.qingguang.browser.data.BookmarkFolder?>(null) }
     var deleteBookmark by remember { mutableStateOf<com.qingguang.browser.data.Bookmark?>(null) }
+    var iconTarget by remember { mutableStateOf<com.qingguang.browser.data.Bookmark?>(null) }
 
     fun openFolder(id: Long) {
         path.add(id)
@@ -396,6 +397,10 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                     }
                     context.startActivity(Intent.createChooser(intent, "分享链接"))
                 },
+                "自定义图标" to {
+                    bookmarkAction = null
+                    iconTarget = bookmark
+                },
                 "删除" to {
                     bookmarkAction = null
                     deleteBookmark = bookmark
@@ -531,6 +536,24 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
         )
     }
 
+    iconTarget?.let { bookmark ->
+        IconStyleDialog(
+            title = bookmark.title,
+            initialColor = bookmark.iconColor,
+            initialText = bookmark.iconText,
+            onDismiss = { iconTarget = null },
+            onSave = { color, text ->
+                iconTarget = null
+                scope.launch {
+                    // 按 URL 同步书签与首页入口，历史记录展示时也读取同一书签样式
+                    app.database.bookmarkDao().updateIcon(bookmark.id, color, text)
+                    app.database.bookmarkDao().updateIconByUrl(bookmark.url, color, text)
+                    app.database.homeItemDao().updateIconByUrl(bookmark.url, color, text)
+                }
+            }
+        )
+    }
+
     deleteBookmark?.let { bookmark ->
         AlertDialog(
             onDismissRequest = { deleteBookmark = null },
@@ -585,19 +608,7 @@ private fun BookmarkFolderRow(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            Modifier
-                .size(34.dp)
-                .background(Color(0xFFE8F0FE), RoundedCornerShape(10.dp)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                Icons.Filled.Folder,
-                contentDescription = null,
-                tint = Color(0xFF2E7CF6),
-                modifier = Modifier.size(19.dp)
-            )
-        }
+        FolderGlyph(Modifier.size(34.dp))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
@@ -640,15 +651,17 @@ private fun BookmarkListRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
-            Modifier
-                .size(34.dp)
-                .background(tabCircleColor(bookmark.title.ifBlank { bookmark.url }), RoundedCornerShape(10.dp)),
+            Modifier.size(34.dp),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = tabInitial(bookmark.title, bookmark.url),
-                fontSize = 14.sp,
-                color = Color.White
+            SiteIconBadge(
+                title = bookmark.title,
+                url = bookmark.url,
+                iconColor = bookmark.iconColor,
+                iconText = bookmark.iconText,
+                size = 34.dp,
+                corner = 10.dp,
+                fontSize = 14.sp
             )
         }
         Spacer(Modifier.width(12.dp))
@@ -788,6 +801,11 @@ private fun HistoryPage(controller: BrowserController, onClose: () -> Unit) {
     val history by app.database.historyDao()
         .observeRecent()
         .collectAsStateWithLifecycle(initialValue = emptyList())
+    // 历史图标与书签保持一致：同一 URL 复用书签的自定义样式
+    val bookmarks by app.database.bookmarkDao()
+        .observeAll()
+        .collectAsStateWithLifecycle(initialValue = emptyList())
+    val iconStyles = remember(bookmarks) { bookmarks.associateBy { it.url } }
     var confirmClear by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
@@ -807,6 +825,17 @@ private fun HistoryPage(controller: BrowserController, onClose: () -> Unit) {
             LazyColumn(Modifier.fillMaxSize()) {
                 items(history, key = { it.id }) { item ->
                     ListItem(
+                        leadingContent = {
+                            val style = iconStyles[item.url]
+                            SiteIconBadge(
+                                title = item.title,
+                                url = item.url,
+                                iconColor = style?.iconColor,
+                                iconText = style?.iconText,
+                                size = 34.dp,
+                                corner = 10.dp
+                            )
+                        },
                         headlineContent = {
                             Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         },
@@ -900,6 +929,33 @@ private fun DownloadsPage() {
 
 @Composable
 private fun BackupsPage(controller: BrowserController) {
+    var mode by remember { mutableStateOf(0) }
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            FilterChip(
+                selected = mode == 0,
+                onClick = { mode = 0 },
+                label = { Text("站点数据") }
+            )
+            FilterChip(
+                selected = mode == 1,
+                onClick = { mode = 1 },
+                label = { Text("全局数据") }
+            )
+        }
+        HorizontalDivider()
+        Box(Modifier.weight(1f)) {
+            if (mode == 0) SiteBackupSection(controller) else GlobalBackupSection(controller)
+        }
+    }
+}
+
+/** 站点级 Cookie / localStorage 备份 */
+@Composable
+private fun SiteBackupSection(controller: BrowserController) {
     val context = LocalContext.current
     val app = context.applicationContext as App
     val scope = rememberCoroutineScope()
@@ -1067,6 +1123,165 @@ private fun BackupsPage(controller: BrowserController) {
                 TextButton(onClick = {
                     pendingRestore = null
                     controller.restoreBackup(info) { _, msg -> message = msg }
+                }) { Text("恢复") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRestore = null }) { Text("取消") }
+            }
+        )
+    }
+}
+
+/** 全局数据（设置、书签、首页快捷入口、历史、本地网页记录）备份 */
+@Composable
+private fun GlobalBackupSection(controller: BrowserController) {
+    val context = LocalContext.current
+    val app = context.applicationContext as App
+    val scope = rememberCoroutineScope()
+
+    var items by remember { mutableStateOf<List<BackupInfo>>(emptyList()) }
+    var busy by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var autoBackup by remember { mutableStateOf(app.settings.autoBackupGlobal) }
+    var pendingDelete by remember { mutableStateOf<BackupInfo?>(null) }
+    var pendingRestore by remember { mutableStateOf<BackupInfo?>(null) }
+
+    LaunchedEffect(Unit) {
+        items = app.globalBackups.list()
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) {
+            Text("全局数据备份", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            Text(
+                "包含设置、书签与文件夹、首页快捷入口、浏览历史、本地网页记录。备份文件与站点备份放在同一目录。",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("退出或切后台时自动备份", fontSize = 13.sp)
+                    Text(
+                        "最多保留最新 10 份",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = autoBackup,
+                    onCheckedChange = {
+                        autoBackup = it
+                        app.settings.autoBackupGlobal = it
+                    }
+                )
+            }
+            Button(
+                onClick = {
+                    if (!busy) {
+                        busy = true
+                        scope.launch {
+                            val result = app.globalBackups.backupNow()
+                            busy = false
+                            message = result.getOrElse { it.message ?: "备份失败" }
+                            if (result.isSuccess) items = app.globalBackups.list()
+                        }
+                    }
+                },
+                enabled = !busy,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp)
+            ) {
+                Text(if (busy) "正在备份…" else "立即备份全局数据")
+            }
+            message?.let {
+                Text(
+                    it,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+        }
+        HorizontalDivider()
+        if (items.isEmpty()) {
+            EmptyHint("还没有全局数据备份。")
+        } else {
+            LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
+                items(items, key = { it.name }) { info ->
+                    ListItem(
+                        headlineContent = {
+                            Text(BackupManager.formatTime(info.createdAt), fontSize = 13.sp)
+                        },
+                        supportingContent = {
+                            Text(
+                                "全局数据 · ${BackupManager.formatSize(info.sizeBytes)}",
+                                fontSize = 11.sp
+                            )
+                        },
+                        trailingContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(onClick = { pendingRestore = info }) { Text("恢复") }
+                                IconButton(onClick = { pendingDelete = info }) {
+                                    Icon(Icons.Filled.Delete, contentDescription = "删除备份")
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    pendingDelete?.let { info ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除这份全局备份？") },
+            text = { Text(BackupManager.formatTime(info.createdAt)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingDelete = null
+                    scope.launch {
+                        val ok = app.globalBackups.delete(info)
+                        items = app.globalBackups.list()
+                        message = if (ok) "备份已删除" else "删除失败"
+                    }
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+            }
+        )
+    }
+
+    pendingRestore?.let { info ->
+        AlertDialog(
+            onDismissRequest = { pendingRestore = null },
+            title = { Text("恢复全局数据？") },
+            text = {
+                Text("当前的设置、书签与文件夹、首页快捷入口、历史记录都会被这份备份覆盖，此操作不可撤销。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingRestore = null
+                    busy = true
+                    scope.launch {
+                        val result = app.globalBackups.restore(info)
+                        busy = false
+                        message = result.getOrElse { it.message ?: "恢复失败" }
+                        if (result.isSuccess) {
+                            ThemeController.set(context, app.settings.appTheme)
+                            controller.applySettings()
+                            controller.applyFollowPageTheme(app.settings.followPageTheme)
+                            autoBackup = app.settings.autoBackupGlobal
+                        }
+                    }
                 }) { Text("恢复") }
             },
             dismissButton = {

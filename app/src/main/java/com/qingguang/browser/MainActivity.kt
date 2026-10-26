@@ -1,6 +1,7 @@
 package com.qingguang.browser
 
 import android.Manifest
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -35,14 +36,25 @@ class MainActivity : ComponentActivity() {
         pendingLocationCallback = null
     }
 
-    /** 网页 <input type="file"> 选文件结果回传 */
+    /** 网页 <input type="file"> 选文件结果回传，支持一次选择多个文件 */
     private val fileChooserLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         val callback = pendingFileCallback
         pendingFileCallback = null
-        val uris = WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
-        callback?.invoke(uris)
+        if (result.resultCode != Activity.RESULT_OK) {
+            callback?.invoke(null)
+            return@registerForActivityResult
+        }
+        val data = result.data
+        val uris = mutableListOf<Uri>()
+        data?.clipData?.let { clip ->
+            for (i in 0 until clip.itemCount) {
+                clip.getItemAt(i)?.uri?.let { uris.add(it) }
+            }
+        }
+        data?.data?.let { if (uris.isEmpty()) uris.add(it) }
+        callback?.invoke(uris.takeIf { it.isNotEmpty() }?.toTypedArray())
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -64,7 +76,21 @@ class MainActivity : ComponentActivity() {
         }
         controller.fileChooserRequester = { params, callback ->
             pendingFileCallback = callback
-            val launched = runCatching { fileChooserLauncher.launch(params.createIntent()) }.isSuccess
+            // 使用系统文档选择器并显式开启多选，支持一次导入几十个网页文件
+            val allowMultiple =
+                params.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE
+            val mimeTypes = params.acceptTypes
+                .filter { it.contains("/") }
+                .distinct()
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
+                if (mimeTypes.isNotEmpty()) {
+                    putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes.toTypedArray())
+                }
+            }
+            val launched = runCatching { fileChooserLauncher.launch(intent) }.isSuccess
             if (!launched) {
                 pendingFileCallback = null
                 callback(null)
@@ -144,6 +170,9 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         controller.autoBackupCurrent()
+        lifecycleScope.launch {
+            (applicationContext as App).globalBackups.autoBackupIfNeeded()
+        }
     }
 
     override fun onDestroy() {

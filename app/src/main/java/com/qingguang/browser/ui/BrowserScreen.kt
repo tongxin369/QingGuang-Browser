@@ -12,6 +12,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -81,8 +82,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -380,9 +383,22 @@ private fun TabPanel(
     colors: BarColors,
     onDismiss: () -> Unit
 ) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+    Box(Modifier.fillMaxSize()) {
+        // 点击面板上方空白处关闭
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.12f))
+                .pointerInput(onDismiss) {
+                    detectTapGestures { onDismiss() }
+                }
+        )
         Surface(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                // 面板空白区域不触发“点空白关闭”
+                .pointerInput(Unit) { detectTapGestures { } },
             color = colors.container,
             shadowElevation = 12.dp
         ) {
@@ -589,10 +605,23 @@ private fun MenuPanel(
         }
     }
 
-    val rowHeight = 62.dp
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+    val rowHeight = 66.dp
+    Box(Modifier.fillMaxSize()) {
+        // 点击面板上方空白处关闭
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.12f))
+                .pointerInput(onDismiss) {
+                    detectTapGestures { onDismiss() }
+                }
+        )
         Surface(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                // 面板空白区域不触发“点空白关闭”
+                .pointerInput(Unit) { detectTapGestures { } },
             color = MaterialTheme.colorScheme.surface,
             shadowElevation = 12.dp
         ) {
@@ -615,21 +644,24 @@ private fun MenuPanel(
                                         Modifier
                                             .weight(1f)
                                             .clickable { run(item) }
-                                            .padding(vertical = 10.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally
+                                            .padding(vertical = 5.dp, horizontal = 2.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center
                                     ) {
                                         Icon(
                                             menuIcon(item, isDark),
                                             contentDescription = menuLabel(item, isDark),
                                             tint = MaterialTheme.colorScheme.onSurface,
-                                            modifier = Modifier.size(22.dp)
+                                            modifier = Modifier.size(21.dp)
                                         )
-                                        Spacer(Modifier.height(6.dp))
+                                        Spacer(Modifier.height(4.dp))
                                         Text(
                                             menuLabel(item, isDark),
-                                            fontSize = 11.sp,
+                                            fontSize = 10.sp,
                                             maxLines = 1,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            textAlign = TextAlign.Center,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.fillMaxWidth()
                                         )
                                     }
                                 }
