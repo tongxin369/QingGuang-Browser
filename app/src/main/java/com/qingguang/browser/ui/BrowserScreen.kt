@@ -58,7 +58,6 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -399,6 +398,7 @@ private fun TabPanel(
                 .fillMaxWidth()
                 // 面板空白区域不触发“点空白关闭”
                 .pointerInput(Unit) { detectTapGestures { } },
+            shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp),
             color = colors.container,
             shadowElevation = 12.dp
         ) {
@@ -428,7 +428,6 @@ private fun TabPanel(
                         )
                     }
                 }
-                HorizontalDivider(color = colors.content.copy(alpha = 0.12f))
                 LazyColumn(Modifier.weight(1f, fill = false)) {
                     items(controller.tabList, key = { it.id }) { tab ->
                         TabRow(
@@ -441,7 +440,6 @@ private fun TabPanel(
                         )
                     }
                 }
-                HorizontalDivider(color = colors.content.copy(alpha = 0.12f))
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -605,7 +603,7 @@ private fun MenuPanel(
         }
     }
 
-    val rowHeight = 66.dp
+    val rowHeight = 72.dp
     Box(Modifier.fillMaxSize()) {
         // 点击面板上方空白处关闭
         Box(
@@ -622,11 +620,15 @@ private fun MenuPanel(
                 .fillMaxWidth()
                 // 面板空白区域不触发“点空白关闭”
                 .pointerInput(Unit) { detectTapGestures { } },
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
             color = MaterialTheme.colorScheme.surface,
             shadowElevation = 12.dp
         ) {
             Column(Modifier.fillMaxWidth()) {
-                HorizontalPager(state = pagerState) { pageIndex ->
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.padding(top = 10.dp)
+                ) { pageIndex ->
                     val rowsInPage = pages[pageIndex].chunked(MenuConfig.COLUMNS)
                     Column(
                         Modifier
@@ -644,7 +646,7 @@ private fun MenuPanel(
                                         Modifier
                                             .weight(1f)
                                             .clickable { run(item) }
-                                            .padding(vertical = 5.dp, horizontal = 2.dp),
+                                            .padding(vertical = 4.dp, horizontal = 2.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally,
                                         verticalArrangement = Arrangement.Center
                                     ) {
@@ -652,12 +654,12 @@ private fun MenuPanel(
                                             menuIcon(item, isDark),
                                             contentDescription = menuLabel(item, isDark),
                                             tint = MaterialTheme.colorScheme.onSurface,
-                                            modifier = Modifier.size(21.dp)
+                                            modifier = Modifier.size(24.dp)
                                         )
-                                        Spacer(Modifier.height(4.dp))
+                                        Spacer(Modifier.height(5.dp))
                                         Text(
                                             menuLabel(item, isDark),
-                                            fontSize = 10.sp,
+                                            fontSize = 11.sp,
                                             maxLines = 1,
                                             textAlign = TextAlign.Center,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -681,7 +683,7 @@ private fun MenuPanel(
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .height(22.dp),
+                        .height(24.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     if (pages.size > 1) {

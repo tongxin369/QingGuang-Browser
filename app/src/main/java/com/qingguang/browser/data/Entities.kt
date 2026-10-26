@@ -36,7 +36,9 @@ data class HomeItem(
     val sortOrder: Int = 0,
     val createdAt: Long = System.currentTimeMillis(),
     val iconColor: Int? = null,
-    val iconText: String? = null
+    val iconText: String? = null,
+    /** 所在首页分页：0 第一页，1 第二页（仅对 parentId = 0 的根图标有效） */
+    val page: Int = 0
 )
 
 @Entity(tableName = "history")

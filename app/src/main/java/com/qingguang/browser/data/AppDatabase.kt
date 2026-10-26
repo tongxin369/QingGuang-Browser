@@ -12,7 +12,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         Bookmark::class, BookmarkFolder::class, HomeItem::class, HistoryItem::class,
         LocalPage::class, DownloadRecord::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -33,8 +33,16 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "qingguang.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { instance = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .build().also { instance = it }
             }
+
+        /** v5：首页快捷入口支持分页 */
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE home_items ADD COLUMN page INTEGER NOT NULL DEFAULT 0")
+            }
+        }
 
         /** v4：书签与首页快捷入口支持自定义图标颜色/文字 */
         private val MIGRATION_3_4 = object : Migration(3, 4) {

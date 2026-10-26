@@ -99,7 +99,8 @@ class GlobalBackupManager(
                             sortOrder = o.optInt("sortOrder"),
                             createdAt = o.optLong("createdAt", System.currentTimeMillis()),
                             iconColor = o.optNullableInt("iconColor"),
-                            iconText = o.optNullableString("iconText")
+                            iconText = o.optNullableString("iconText"),
+                            page = o.optInt("page", 0)
                         )
                     )
                 }
@@ -169,7 +170,8 @@ class GlobalBackupManager(
         }
     }
 
-    private suspend fun pruneOld(keep: Int = KEEP_COUNT) {
+    private suspend fun pruneOld() {
+        val keep = settings.globalBackupKeep
         backups.listBackups(global = true).drop(keep).forEach { backups.delete(it) }
     }
 
@@ -192,11 +194,11 @@ class GlobalBackupManager(
         if (o.has("autoBackupGlobal")) {
             settings.autoBackupGlobal = o.optBoolean("autoBackupGlobal", settings.autoBackupGlobal)
         }
+        settings.globalBackupKeep = o.optInt("globalBackupKeep", settings.globalBackupKeep)
     }
 
     companion object {
         private const val TYPE = "global"
-        private const val KEEP_COUNT = 10
     }
 }
 
@@ -227,6 +229,7 @@ private fun HomeItem.toJson(): JSONObject = JSONObject().apply {
     put("createdAt", createdAt)
     put("iconColor", iconColor)
     put("iconText", iconText)
+    put("page", page)
 }
 
 private fun HistoryItem.toJson(): JSONObject = JSONObject().apply {
@@ -254,6 +257,7 @@ private fun SettingsStore.toJson(): JSONObject = JSONObject().apply {
     put("menuOrder", menuOrder)
     put("autoBackup", autoBackup)
     put("autoBackupGlobal", autoBackupGlobal)
+    put("globalBackupKeep", globalBackupKeep)
 }
 
 private fun JSONObject.optNullableInt(key: String): Int? =

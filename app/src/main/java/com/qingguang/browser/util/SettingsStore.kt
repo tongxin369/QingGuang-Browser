@@ -27,6 +27,11 @@ class SettingsStore(context: Context) {
         get() = prefs.getLong(KEY_LAST_GLOBAL_BACKUP, 0L)
         set(value) = prefs.edit().putLong(KEY_LAST_GLOBAL_BACKUP, value).apply()
 
+    /** 全局数据备份最多保留的份数 */
+    var globalBackupKeep: Int
+        get() = prefs.getInt(KEY_GLOBAL_BACKUP_KEEP, 10).coerceIn(1, 50)
+        set(value) = prefs.edit().putInt(KEY_GLOBAL_BACKUP_KEEP, value.coerceIn(1, 50)).apply()
+
     /** 字体缩放百分比，100 为基准 */
     var textZoom: Int
         get() = prefs.getInt(KEY_TEXT_ZOOM, 100)
@@ -72,6 +77,7 @@ class SettingsStore(context: Context) {
         private const val KEY_AUTO_BACKUP = "auto_backup"
         private const val KEY_AUTO_BACKUP_GLOBAL = "auto_backup_global"
         private const val KEY_LAST_GLOBAL_BACKUP = "last_global_backup"
+        private const val KEY_GLOBAL_BACKUP_KEEP = "global_backup_keep"
         private const val KEY_TEXT_ZOOM = "text_zoom"
         private const val KEY_DESKTOP_MODE = "desktop_mode"
         private const val KEY_DARK_MODE = "dark_mode"

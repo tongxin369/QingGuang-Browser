@@ -83,6 +83,13 @@ interface HomeItemDao {
     @Query("SELECT COUNT(*) FROM home_items WHERE url = :url AND parentId = 0")
     suspend fun countOnHome(url: String): Int
 
+    /** 某一首页分页上的根图标数量，用于判断第一页是否已满 */
+    @Query("SELECT COUNT(*) FROM home_items WHERE parentId = 0 AND page = :page")
+    suspend fun countRootOnPage(page: Int): Int
+
+    @Query("UPDATE home_items SET page = :page, sortOrder = :sortOrder WHERE id = :id")
+    suspend fun moveToPage(id: Long, page: Int, sortOrder: Int)
+
     @Query("UPDATE home_items SET iconColor = :color, iconText = :text WHERE id = :id")
     suspend fun updateIcon(id: Long, color: Int?, text: String?)
 

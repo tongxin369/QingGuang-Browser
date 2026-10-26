@@ -1,0 +1,35 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 方案 J：单色亮蓝，环略细、经纬略粗（环 4.6 / 线 3.0），连接处更平顺 -->
+    <path
+        android:pathData="M54,54m-27,0a27,27 0 1,1 54,0a27,27 0 1,1 -54,0"
+        android:strokeWidth="4.6"
+        android:strokeColor="#4DA3FF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M28,42h52"
+        android:strokeWidth="3"
+        android:strokeColor="#4DA3FF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M28,66h52"
+        android:strokeWidth="3"
+        android:strokeColor="#4DA3FF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M27,54h54"
+        android:strokeWidth="3"
+        android:strokeColor="#4DA3FF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,27C40,27 40,81 54,81C68,81 68,27 54,27Z"
+        android:strokeWidth="3"
+        android:strokeColor="#4DA3FF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,54m-5,0a5,5 0 1,1 10,0a5,5 0 1,1 -10,0"
+        android:fillColor="#F0B429" />
+</vector>

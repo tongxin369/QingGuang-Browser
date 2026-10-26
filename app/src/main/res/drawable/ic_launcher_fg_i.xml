@@ -1,0 +1,35 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 方案 I：接近亮蓝的深一档（粗环 #3E92F6 + 经纬 #4DA3FF）+ 金橙中心点 -->
+    <path
+        android:pathData="M54,54m-27,0a27,27 0 1,1 54,0a27,27 0 1,1 -54,0"
+        android:strokeWidth="5.5"
+        android:strokeColor="#3E92F6"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M28,42h52"
+        android:strokeWidth="2.5"
+        android:strokeColor="#4DA3FF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M28,66h52"
+        android:strokeWidth="2.5"
+        android:strokeColor="#4DA3FF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M27,54h54"
+        android:strokeWidth="2.5"
+        android:strokeColor="#4DA3FF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,27C40,27 40,81 54,81C68,81 68,27 54,27Z"
+        android:strokeWidth="2.5"
+        android:strokeColor="#4DA3FF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,54m-5,0a5,5 0 1,1 10,0a5,5 0 1,1 -10,0"
+        android:fillColor="#F0B429" />
+</vector>

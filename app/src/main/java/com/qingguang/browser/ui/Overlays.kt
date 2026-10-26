@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -377,10 +378,12 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                     scope.launch {
                         val dao = app.database.homeItemDao()
                         if (dao.countOnHome(bookmark.url) == 0) {
+                            val page = if (dao.countRootOnPage(0) < HOME_PAGE_CAPACITY) 0 else 1
                             dao.insert(
                                 com.qingguang.browser.data.HomeItem(
                                     title = bookmark.title,
-                                    url = bookmark.url
+                                    url = bookmark.url,
+                                    page = page
                                 )
                             )
                             Toast.makeText(context, "已添加到首页", Toast.LENGTH_SHORT).show()
@@ -1153,6 +1156,7 @@ private fun GlobalBackupSection(controller: BrowserController) {
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var autoBackup by remember { mutableStateOf(app.settings.autoBackupGlobal) }
+    var keep by remember { mutableStateOf(app.settings.globalBackupKeep) }
     var pendingDelete by remember { mutableStateOf<BackupInfo?>(null) }
     var pendingRestore by remember { mutableStateOf<BackupInfo?>(null) }
 
@@ -1164,7 +1168,7 @@ private fun GlobalBackupSection(controller: BrowserController) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) {
             Text("全局数据备份", fontSize = 16.sp, fontWeight = FontWeight.Medium)
             Text(
-                "包含设置、书签与文件夹、首页快捷入口、浏览历史、本地网页记录。备份文件与站点备份放在同一目录。",
+                "包含设置、书签与文件夹、首页快捷入口、浏览历史、本地网页记录；不含网页内部的 Cookie / 缓存数据。",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp)
@@ -1178,7 +1182,7 @@ private fun GlobalBackupSection(controller: BrowserController) {
                 Column(Modifier.weight(1f)) {
                     Text("退出或切后台时自动备份", fontSize = 13.sp)
                     Text(
-                        "最多保留最新 10 份",
+                        "自动备份间隔至少 10 分钟",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1190,6 +1194,54 @@ private fun GlobalBackupSection(controller: BrowserController) {
                         app.settings.autoBackupGlobal = it
                     }
                 )
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("保留最新份数", fontSize = 13.sp)
+                    Text(
+                        "下次备份时清理超出的旧备份",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        if (keep > 1) {
+                            keep -= 1
+                            app.settings.globalBackupKeep = keep
+                        }
+                    },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Remove,
+                        contentDescription = "减少",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                Box(Modifier.width(30.dp), contentAlignment = Alignment.Center) {
+                    Text("$keep", fontSize = 14.sp)
+                }
+                IconButton(
+                    onClick = {
+                        if (keep < 50) {
+                            keep += 1
+                            app.settings.globalBackupKeep = keep
+                        }
+                    },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = "增加",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
             Button(
                 onClick = {

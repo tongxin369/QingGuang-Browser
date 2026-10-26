@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
@@ -41,7 +42,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.BookmarkBorder
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
@@ -88,13 +88,15 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.qingguang.browser.App
 import com.qingguang.browser.R
 import com.qingguang.browser.data.HomeItem
-import com.qingguang.browser.data.LocalPage
 import com.qingguang.browser.util.LocalSiteManager
 import com.qingguang.browser.web.BrowserController
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-/** 首页：第 1 页是 Via 风格常驻主页，第 2 页是本地网页管理页，左右滑动切换 */
+/** 第一页最多显示 3 行 × 4 列 = 12 个图标，超出的新图标自动放到第二页 */
+internal const val HOME_PAGE_CAPACITY = 12
+
+/** 首页：第 1 页是 Via 风格常驻主页，第 2 页是本地网页模块 + 快捷入口第二页 */
 @Composable
 fun HomePage(
     controller: BrowserController,
@@ -102,18 +104,68 @@ fun HomePage(
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as App
-    val pagerState = rememberPagerState(pageCount = { 2 })
     val scope = rememberCoroutineScope()
+    val pagerState = rememberPagerState(pageCount = { 2 })
+
+    val homeItems by app.database.homeItemDao()
+        .observeAll()
+        .collectAsStateWithLifecycle(initialValue = emptyList())
+    val rootItems = homeItems.filter { it.parentId == 0L }.sortedBy { it.sortOrder }
+    val firstPageItems = rootItems.filter { it.page <= 0 }
+    val secondPageItems = rootItems.filter { it.page > 0 }
+
+    var actionTarget by remember { mutableStateOf<HomeItem?>(null) }
+    var openFolder by remember { mutableStateOf<HomeItem?>(null) }
+    var renameTarget by remember { mutableStateOf<HomeItem?>(null) }
+    var renameName by remember { mutableStateOf("") }
+    var iconTarget by remember { mutableStateOf<HomeItem?>(null) }
+
+    fun mergeItems(dragged: HomeItem, target: HomeItem, parentId: Long, page: Int) {
+        scope.launch {
+            val dao = app.database.homeItemDao()
+            if (target.isFolder) {
+                dao.moveToParent(dragged.id, target.id, 0)
+            } else {
+                val folderId = dao.insert(
+                    HomeItem(
+                        title = "分组",
+                        isFolder = true,
+                        parentId = parentId,
+                        page = page,
+                        sortOrder = minOf(target.sortOrder, dragged.sortOrder)
+                    )
+                )
+                dao.moveToParent(target.id, folderId, 0)
+                dao.moveToParent(dragged.id, folderId, 1)
+            }
+            toast(context, "已合并为分组")
+        }
+    }
 
     Box(Modifier.fillMaxSize()) {
         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
-            when (page) {
-                0 -> HomeMainPage(
+            if (page == 0) {
+                HomeMainPage(
                     controller = controller,
                     onOpenOverlay = onOpenOverlay,
-                    onOpenLocalPages = { scope.launch { pagerState.animateScrollToPage(1) } }
+                    onOpenLocalPages = { scope.launch { pagerState.animateScrollToPage(1) } },
+                    items = firstPageItems,
+                    onOpenItem = { item ->
+                        if (item.isFolder) openFolder = item else controller.loadUrl(item.url)
+                    },
+                    onLongPress = { actionTarget = it },
+                    onMerge = { dragged, target -> mergeItems(dragged, target, 0L, 0) }
                 )
-                else -> LocalPagesPage(controller = controller)
+            } else {
+                HomeSecondPage(
+                    controller = controller,
+                    items = secondPageItems,
+                    onOpenItem = { item ->
+                        if (item.isFolder) openFolder = item else controller.loadUrl(item.url)
+                    },
+                    onLongPress = { actionTarget = it },
+                    onMerge = { dragged, target -> mergeItems(dragged, target, 0L, 1) }
+                )
             }
         }
         Row(
@@ -138,27 +190,177 @@ fun HomePage(
             }
         }
     }
+
+    actionTarget?.let { item ->
+        AlertDialog(
+            onDismissRequest = { actionTarget = null },
+            title = { Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            text = {
+                Column {
+                    HomeActionRow("打开") {
+                        actionTarget = null
+                        if (item.isFolder) openFolder = item else controller.loadUrl(item.url)
+                    }
+                    HomeActionRow("重命名") {
+                        actionTarget = null
+                        renameTarget = item
+                        renameName = item.title
+                    }
+                    if (item.parentId == 0L) {
+                        HomeActionRow(if (item.page == 0) "移到第二页" else "移到第一页") {
+                            actionTarget = null
+                            val targetPage = if (item.page == 0) 1 else 0
+                            scope.launch {
+                                val dao = app.database.homeItemDao()
+                                dao.moveToPage(
+                                    item.id,
+                                    targetPage,
+                                    dao.countRootOnPage(targetPage)
+                                )
+                            }
+                        }
+                    }
+                    if (item.isFolder) {
+                        HomeActionRow("解散分组") {
+                            actionTarget = null
+                            scope.launch {
+                                val dao = app.database.homeItemDao()
+                                homeItems.filter { it.parentId == item.id }.forEach { child ->
+                                    dao.moveToParent(child.id, 0L, child.sortOrder)
+                                    dao.moveToPage(child.id, item.page, child.sortOrder)
+                                }
+                                dao.delete(item.id)
+                            }
+                        }
+                    } else {
+                        HomeActionRow("自定义图标") {
+                            actionTarget = null
+                            iconTarget = item
+                        }
+                        if (item.parentId != 0L) {
+                            HomeActionRow("移出分组") {
+                                actionTarget = null
+                                scope.launch {
+                                    val dao = app.database.homeItemDao()
+                                    dao.moveToParent(item.id, 0L, item.sortOrder)
+                                    val page = if (dao.countRootOnPage(0) < HOME_PAGE_CAPACITY) 0 else 1
+                                    dao.moveToPage(item.id, page, item.sortOrder)
+                                }
+                            }
+                        } else {
+                            HomeActionRow("移出首页") {
+                                actionTarget = null
+                                scope.launch { app.database.homeItemDao().delete(item.id) }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { actionTarget = null }) { Text("关闭") }
+            }
+        )
+    }
+
+    openFolder?.let { folder ->
+        val children = homeItems.filter { it.parentId == folder.id }.sortedBy { it.sortOrder }
+        AlertDialog(
+            onDismissRequest = { openFolder = null },
+            title = { Text(folder.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            text = {
+                if (children.isEmpty()) {
+                    Text("这个分组里还没有图标。", fontSize = 13.sp)
+                } else {
+                    // 分组内容也使用快捷入口的图标网格样式；面板宽度不变，一行放 3 个
+                    Column(
+                        Modifier
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        HomeShortcutGrid(
+                            items = children,
+                            columns = 3,
+                            onOpen = { child ->
+                                openFolder = null
+                                if (child.isFolder) openFolder = child
+                                else controller.loadUrl(child.url)
+                            },
+                            onLongPress = { child ->
+                                openFolder = null
+                                actionTarget = child
+                            },
+                            onMerge = { dragged, target -> mergeItems(dragged, target, folder.id, folder.page) }
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { openFolder = null }) { Text("关闭") }
+            }
+        )
+    }
+
+    renameTarget?.let { item ->
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("重命名快捷入口") },
+            text = {
+                OutlinedTextField(
+                    value = renameName,
+                    onValueChange = { renameName = it },
+                    label = { Text("名称") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            app.database.homeItemDao().rename(item.id, renameName.trim())
+                        }
+                        renameTarget = null
+                    },
+                    enabled = renameName.isNotBlank()
+                ) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameTarget = null }) { Text("取消") }
+            }
+        )
+    }
+    iconTarget?.let { item ->
+        IconStyleDialog(
+            title = item.title,
+            initialColor = item.iconColor,
+            initialText = item.iconText,
+            onDismiss = { iconTarget = null },
+            onSave = { color, text ->
+                iconTarget = null
+                scope.launch {
+                    val homeDao = app.database.homeItemDao()
+                    homeDao.updateIcon(item.id, color, text)
+                    if (item.url.isNotBlank()) {
+                        // 与书签页、历史记录同步同一 URL 的图标样式
+                        homeDao.updateIconByUrl(item.url, color, text)
+                        app.database.bookmarkDao().updateIconByUrl(item.url, color, text)
+                    }
+                }
+            }
+        )
+    }
 }
 
 @Composable
 private fun HomeMainPage(
     controller: BrowserController,
     onOpenOverlay: (OverlayPage) -> Unit,
-    onOpenLocalPages: () -> Unit
+    onOpenLocalPages: () -> Unit,
+    items: List<HomeItem>,
+    onOpenItem: (HomeItem) -> Unit,
+    onLongPress: (HomeItem) -> Unit,
+    onMerge: (HomeItem, HomeItem) -> Unit
 ) {
-    val context = LocalContext.current
-    val app = context.applicationContext as App
-    val scope = rememberCoroutineScope()
-    val homeItems by app.database.homeItemDao()
-        .observeAll()
-        .collectAsStateWithLifecycle(initialValue = emptyList())
-    val rootItems = homeItems.filter { it.parentId == 0L }.sortedBy { it.sortOrder }
     var query by remember { mutableStateOf("") }
-    var actionTarget by remember { mutableStateOf<HomeItem?>(null) }
-    var openFolder by remember { mutableStateOf<HomeItem?>(null) }
-    var renameTarget by remember { mutableStateOf<HomeItem?>(null) }
-    var renameName by remember { mutableStateOf("") }
-    var iconTarget by remember { mutableStateOf<HomeItem?>(null) }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -187,20 +389,12 @@ private fun HomeMainPage(
         item {
             Spacer(Modifier.height(28.dp))
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Box(
-                    Modifier
-                        .size(74.dp)
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(Color.White)
-                        .border(1.dp, Color(0xFFE3E8F0), RoundedCornerShape(20.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Image(
-                        painter = painterResource(R.drawable.ic_launcher_foreground),
-                        contentDescription = null,
-                        modifier = Modifier.size(58.dp)
-                    )
-                }
+                // 图标前景自带透明留白，直接放大显示；不额外加白底和描边
+                Image(
+                    painter = painterResource(R.drawable.ic_launcher_foreground),
+                    contentDescription = null,
+                    modifier = Modifier.size(104.dp)
+                )
             }
             Spacer(Modifier.height(24.dp))
         }
@@ -299,14 +493,14 @@ private fun HomeMainPage(
                 }
             }
             Text(
-                "长按图标后拖到另一个图标上，可以合并成一个分组。",
+                "长按图标后拖到另一个图标上，可以合并成一个分组；长按菜单里可以把图标移到第二页。",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 10.dp)
             )
         }
 
-        if (rootItems.isEmpty()) {
+        if (items.isEmpty()) {
             item {
                 Text(
                     "还没有首页快捷入口。添加书签时勾选「添加到首页」，或在书签长按菜单里选「添加到首页」。",
@@ -318,205 +512,29 @@ private fun HomeMainPage(
         } else {
             item {
                 HomeShortcutGrid(
-                    items = rootItems,
-                    onOpen = { item ->
-                        if (item.isFolder) openFolder = item else controller.loadUrl(item.url)
-                    },
-                    onLongPress = { actionTarget = it },
-                    onMerge = { dragged, target ->
-                        scope.launch {
-                            val dao = app.database.homeItemDao()
-                            if (target.isFolder) {
-                                dao.moveToParent(dragged.id, target.id, 0)
-                            } else {
-                                val folderId = dao.insert(
-                                    HomeItem(
-                                        title = "分组",
-                                        isFolder = true,
-                                        parentId = 0,
-                                        sortOrder = minOf(target.sortOrder, dragged.sortOrder)
-                                    )
-                                )
-                                dao.moveToParent(target.id, folderId, 0)
-                                dao.moveToParent(dragged.id, folderId, 1)
-                            }
-                            toast(context, "已合并为分组")
-                        }
-                    }
+                    items = items,
+                    onOpen = onOpenItem,
+                    onLongPress = onLongPress,
+                    onMerge = onMerge
                 )
             }
             item { Spacer(Modifier.height(12.dp)) }
         }
     }
-
-    actionTarget?.let { item ->
-        AlertDialog(
-            onDismissRequest = { actionTarget = null },
-            title = { Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            text = {
-                Column {
-                    HomeActionRow("打开") {
-                        actionTarget = null
-                        if (item.isFolder) openFolder = item else controller.loadUrl(item.url)
-                    }
-                    HomeActionRow("重命名") {
-                        actionTarget = null
-                        renameTarget = item
-                        renameName = item.title
-                    }
-                    if (item.isFolder) {
-                        HomeActionRow("解散分组") {
-                            actionTarget = null
-                            scope.launch {
-                                val dao = app.database.homeItemDao()
-                                homeItems.filter { it.parentId == item.id }.forEach {
-                                    dao.moveToParent(it.id, 0L, it.sortOrder)
-                                }
-                                dao.delete(item.id)
-                            }
-                        }
-                    } else {
-                        HomeActionRow("自定义图标") {
-                            actionTarget = null
-                            iconTarget = item
-                        }
-                        if (item.parentId != 0L) {
-                            HomeActionRow("移出分组") {
-                                actionTarget = null
-                                scope.launch {
-                                    app.database.homeItemDao()
-                                        .moveToParent(item.id, 0L, item.sortOrder)
-                                }
-                            }
-                        } else {
-                            HomeActionRow("移出首页") {
-                                actionTarget = null
-                                scope.launch { app.database.homeItemDao().delete(item.id) }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { actionTarget = null }) { Text("关闭") }
-            }
-        )
-    }
-
-    openFolder?.let { folder ->
-        val children = homeItems.filter { it.parentId == folder.id }.sortedBy { it.sortOrder }
-        AlertDialog(
-            onDismissRequest = { openFolder = null },
-            title = { Text(folder.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            text = {
-                if (children.isEmpty()) {
-                    Text("这个分组里还没有图标。", fontSize = 13.sp)
-                } else {
-                    // 分组内容也使用快捷入口的图标网格样式
-                    Column(
-                        Modifier
-                            .heightIn(max = 360.dp)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        HomeShortcutGrid(
-                            items = children,
-                            onOpen = { child ->
-                                openFolder = null
-                                if (child.isFolder) openFolder = child
-                                else controller.loadUrl(child.url)
-                            },
-                            onLongPress = { child ->
-                                openFolder = null
-                                actionTarget = child
-                            },
-                            onMerge = { dragged, target ->
-                                scope.launch {
-                                    val dao = app.database.homeItemDao()
-                                    if (target.isFolder) {
-                                        dao.moveToParent(dragged.id, target.id, 0)
-                                    } else {
-                                        val nestedId = dao.insert(
-                                            HomeItem(
-                                                title = "分组",
-                                                isFolder = true,
-                                                parentId = folder.id,
-                                                sortOrder = minOf(target.sortOrder, dragged.sortOrder)
-                                            )
-                                        )
-                                        dao.moveToParent(target.id, nestedId, 0)
-                                        dao.moveToParent(dragged.id, nestedId, 1)
-                                    }
-                                }
-                            }
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { openFolder = null }) { Text("关闭") }
-            }
-        )
-    }
-
-    renameTarget?.let { item ->
-        AlertDialog(
-            onDismissRequest = { renameTarget = null },
-            title = { Text("重命名快捷入口") },
-            text = {
-                OutlinedTextField(
-                    value = renameName,
-                    onValueChange = { renameName = it },
-                    label = { Text("名称") },
-                    singleLine = true
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        scope.launch {
-                            app.database.homeItemDao().rename(item.id, renameName.trim())
-                        }
-                        renameTarget = null
-                    },
-                    enabled = renameName.isNotBlank()
-                ) { Text("保存") }
-            },
-            dismissButton = {
-                TextButton(onClick = { renameTarget = null }) { Text("取消") }
-            }
-        )
-    }
-    iconTarget?.let { item ->
-        IconStyleDialog(
-            title = item.title,
-            initialColor = item.iconColor,
-            initialText = item.iconText,
-            onDismiss = { iconTarget = null },
-            onSave = { color, text ->
-                iconTarget = null
-                scope.launch {
-                    val homeDao = app.database.homeItemDao()
-                    homeDao.updateIcon(item.id, color, text)
-                    if (item.url.isNotBlank()) {
-                        // 与书签页、历史记录同步同一 URL 的图标样式
-                        homeDao.updateIconByUrl(item.url, color, text)
-                        app.database.bookmarkDao().updateIconByUrl(item.url, color, text)
-                    }
-                }
-            }
-        )
-    }
 }
 
+/** 首页第二页：上方是带边框的「本地网页」模块，下方是快捷入口第二页 */
 @Composable
-private fun LocalPagesPage(controller: BrowserController) {
+private fun HomeSecondPage(
+    controller: BrowserController,
+    items: List<HomeItem>,
+    onOpenItem: (HomeItem) -> Unit,
+    onLongPress: (HomeItem) -> Unit,
+    onMerge: (HomeItem, HomeItem) -> Unit
+) {
     val context = LocalContext.current
     val app = context.applicationContext as App
     val scope = rememberCoroutineScope()
-    val localPages by app.database.localPageDao()
-        .observeAll()
-        .collectAsStateWithLifecycle(initialValue = emptyList())
-    var pendingDelete by remember { mutableStateOf<LocalPage?>(null) }
 
     val openFileLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -553,121 +571,97 @@ private fun LocalPagesPage(controller: BrowserController) {
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 18.dp)
     ) {
         item {
-            Text(
-                "本地网页",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "单个 HTML 只复制文件本身；若页面用到 CSS/JS/图片，请导入整个文件夹，相对路径才能正常加载。",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ActionChip("打开文件") { openFileLauncher.launch(arrayOf("*/*")) }
-                ActionChip("打开文件夹") { openTreeLauncher.launch(null) }
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(16.dp)),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface
+            ) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Filled.FolderOpen,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "本地网页",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    Text(
+                        "单个 HTML 只复制文件本身；若页面用到 CSS/JS/图片，请导入整个文件夹，相对路径才能正常加载。",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    Row(
+                        Modifier.padding(top = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        ActionChip("打开文件") { openFileLauncher.launch(arrayOf("*/*")) }
+                        ActionChip("打开文件夹") { openTreeLauncher.launch(null) }
+                    }
+                    TextButton(
+                        onClick = {
+                            controller.loadUrl(LocalSiteManager.ASSET_HOST + "/assets/sample/index.html")
+                        },
+                        contentPadding = PaddingValues(0.dp),
+                        modifier = Modifier.padding(top = 6.dp)
+                    ) { Text("打开内置示例网页", fontSize = 13.sp) }
+                }
             }
-            Spacer(Modifier.height(10.dp))
-            TextButton(
-                onClick = {
-                    controller.loadUrl(LocalSiteManager.ASSET_HOST + "/assets/sample/index.html")
-                },
-                contentPadding = PaddingValues(0.dp)
-            ) { Text("打开内置示例网页", fontSize = 13.sp) }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(22.dp))
         }
 
-        if (localPages.isEmpty()) {
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "快捷入口",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "第 2 页",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Text(
+                "第一页放满 12 个图标后，新添加的快捷入口会自动排到这里；长按图标也可以在菜单里手动移到另一页。",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 10.dp)
+            )
+        }
+
+        if (items.isEmpty()) {
             item {
                 Text(
-                    "还没有导入本地网页。导入后地址会被记住，下次直接从下面打开。",
+                    "第二页还是空的。第一页放满后，新添加的快捷入口会自动出现在这里。",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 10.dp)
+                    modifier = Modifier.padding(vertical = 12.dp)
                 )
             }
         } else {
-            items(localPages, key = { it.siteId }) { page ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            scope.launch {
-                                app.database.localPageDao()
-                                    .touch(page.siteId, System.currentTimeMillis())
-                                controller.loadUrl(page.entryUrl)
-                            }
-                        }
-                        .padding(vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        Modifier
-                            .size(38.dp)
-                            .clip(RoundedCornerShape(11.dp))
-                            .background(Color(0xFF4A6FA5)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            page.displayName.take(1).uppercase(),
-                            fontSize = 15.sp,
-                            color = Color.White
-                        )
-                    }
-                    Spacer(Modifier.size(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            page.displayName,
-                            fontSize = 14.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            page.entryUrl,
-                            fontSize = 11.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    IconButton(onClick = { pendingDelete = page }, modifier = Modifier.size(32.dp)) {
-                        Icon(
-                            Icons.Filled.Close,
-                            contentDescription = "删除记录",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(17.dp)
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    pendingDelete?.let { page ->
-        AlertDialog(
-            onDismissRequest = { pendingDelete = null },
-            title = { Text("删除本地网页？") },
-            text = {
-                Text(
-                    "将删除应用内保存的「${page.displayName}」文件与打开记录。" +
-                        "该网页产生的浏览数据不会自动删除，建议先在备份页面备份。"
+            item {
+                HomeShortcutGrid(
+                    items = items,
+                    onOpen = onOpenItem,
+                    onLongPress = onLongPress,
+                    onMerge = onMerge
                 )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    app.localSites.deleteSite(page.siteId)
-                    scope.launch { app.database.localPageDao().delete(page.siteId) }
-                    pendingDelete = null
-                }) { Text("删除") }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
             }
-        )
+            item { Spacer(Modifier.height(12.dp)) }
+        }
     }
 }
 
@@ -713,6 +707,7 @@ private fun AppIconEntry(
 @Composable
 private fun HomeShortcutGrid(
     items: List<HomeItem>,
+    columns: Int = 4,
     onOpen: (HomeItem) -> Unit,
     onLongPress: (HomeItem) -> Unit,
     onMerge: (HomeItem, HomeItem) -> Unit
@@ -730,18 +725,18 @@ private fun HomeShortcutGrid(
         if (gridSize.width <= 0) return null
         val gapPx = with(density) { gap.toPx() }
         val rowPx = with(density) { rowHeight.toPx() }
-        val cellWidth = (gridSize.width - gapPx * 3f) / 4f
+        val cellWidth = (gridSize.width - gapPx * (columns - 1)) / columns
         if (cellWidth <= 0f) return null
-        val column = (pos.x / (cellWidth + gapPx)).toInt().coerceIn(0, 3)
+        val column = (pos.x / (cellWidth + gapPx)).toInt().coerceIn(0, columns - 1)
         val row = (pos.y / rowPx).toInt().coerceAtLeast(0)
-        return items.getOrNull(row * 4 + column)
+        return items.getOrNull(row * columns + column)
     }
 
     Box(
         Modifier
             .fillMaxWidth()
             .onSizeChanged { gridSize = it }
-            .pointerInput(items) {
+            .pointerInput(items, columns) {
                 val tapSlop = with(density) { 12.dp.toPx() }
                 detectDragGesturesAfterLongPress(
                     onDragStart = { start ->
@@ -783,7 +778,7 @@ private fun HomeShortcutGrid(
             }
     ) {
         Column(Modifier.fillMaxWidth()) {
-            items.chunked(4).forEach { rowItems ->
+            items.chunked(columns).forEach { rowItems ->
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -818,7 +813,7 @@ private fun HomeShortcutGrid(
                             )
                         }
                     }
-                    repeat(4 - rowItems.size) { Spacer(Modifier.weight(1f)) }
+                    repeat(columns - rowItems.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
         }
