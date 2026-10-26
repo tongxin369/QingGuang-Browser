@@ -4,7 +4,9 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ActivityInfo
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.webkit.WebChromeClient
@@ -26,6 +28,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var controller: BrowserController
     private var pendingLocationCallback: ((Boolean) -> Unit)? = null
     private var pendingFileCallback: ((Array<Uri>?) -> Unit)? = null
+    private var pendingNotificationCallback: ((Boolean) -> Unit)? = null
 
     private val locationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -34,6 +37,13 @@ class MainActivity : ComponentActivity() {
             result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         pendingLocationCallback?.invoke(granted)
         pendingLocationCallback = null
+    }
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        pendingNotificationCallback?.invoke(granted)
+        pendingNotificationCallback = null
     }
 
     /** 网页 <input type="file"> 选文件结果回传，支持一次选择多个文件 */
@@ -96,6 +106,20 @@ class MainActivity : ComponentActivity() {
                 callback(null)
             }
         }
+        controller.notificationPermissionRequester = { callback ->
+            val granted = Build.VERSION.SDK_INT < 33 ||
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            if (granted) {
+                callback(true)
+            } else {
+                pendingNotificationCallback = callback
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+        applyScreenOrientation()
         setContent {
             val systemDark = isSystemInDarkTheme()
             val dark = when (ThemeController.mode) {
@@ -141,7 +165,8 @@ class MainActivity : ComponentActivity() {
             runCatching {
                 val app = applicationContext as App
                 val name = queryDisplayName(uri) ?: "本地网页"
-                val page = app.localSites.importSingleHtml(uri, name)
+                // 从其他应用直接打开的文件只保留应用内副本（系统只授予临时读权限，无法稳定回写）
+                val page = app.localSites.importSingleHtml(uri, name, registerSource = false)
                 app.database.localPageDao().upsert(page)
                 controller.loadUrl(page.entryUrl)
             }.onFailure {
@@ -159,6 +184,17 @@ class MainActivity : ComponentActivity() {
             }
         }
         return name
+    }
+
+    /** 应用设置里的屏幕方向 */
+    private fun applyScreenOrientation() {
+        val mode = (applicationContext as App).settings.screenOrientation
+        requestedOrientation = when (mode) {
+            1 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR
+            2 -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            3 -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
     }
 
     private fun hasLocationPermission(): Boolean =

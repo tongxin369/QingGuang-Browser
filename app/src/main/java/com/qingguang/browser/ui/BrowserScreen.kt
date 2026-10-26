@@ -58,7 +58,10 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Tab
@@ -233,6 +236,13 @@ fun BrowserScreen(controller: BrowserController) {
     }
     if (showSource) {
         SourceEditorOverlay(controller = controller, onClose = { showSource = false })
+    }
+    controller.pendingDownload?.let { pending ->
+        DownloadConfirmDialog(
+            request = pending,
+            onConfirm = { controller.confirmDownload(it) },
+            onCancel = { controller.cancelDownload() }
+        )
     }
 }
 
@@ -550,7 +560,7 @@ internal fun tabInitial(title: String, url: String): String {
     return source.take(1).uppercase()
 }
 
-private fun menuIcon(item: MenuItem, isDark: Boolean): ImageVector = when (item) {
+private fun menuIcon(item: MenuItem, isDark: Boolean, isSpeaking: Boolean): ImageVector = when (item) {
     MenuItem.ADD_BOOKMARK -> Icons.Filled.BookmarkAdd
     MenuItem.BACKUP_PAGE -> Icons.Filled.CloudUpload
     MenuItem.BOOKMARKS -> Icons.Filled.BookmarkBorder
@@ -560,6 +570,8 @@ private fun menuIcon(item: MenuItem, isDark: Boolean): ImageVector = when (item)
     MenuItem.SETTINGS -> Icons.Filled.Settings
     MenuItem.REFRESH -> Icons.Filled.Refresh
     MenuItem.VIEW_SOURCE -> Icons.Filled.Code
+    MenuItem.PRINT -> Icons.Filled.Print
+    MenuItem.READ_ALOUD -> if (isSpeaking) Icons.Filled.StopCircle else Icons.Filled.RecordVoiceOver
     MenuItem.COPY_URL -> Icons.Filled.ContentCopy
     MenuItem.SHARE -> Icons.Filled.Share
     MenuItem.DARK_TOGGLE -> if (isDark) Icons.Filled.LightMode else Icons.Filled.DarkMode
@@ -569,8 +581,11 @@ private fun menuIcon(item: MenuItem, isDark: Boolean): ImageVector = when (item)
     MenuItem.CLOSE_TAB -> Icons.Filled.Close
 }
 
-private fun menuLabel(item: MenuItem, isDark: Boolean): String =
-    if (item == MenuItem.DARK_TOGGLE && isDark) "日间模式" else item.label
+private fun menuLabel(item: MenuItem, isDark: Boolean, isSpeaking: Boolean): String = when {
+    item == MenuItem.DARK_TOGGLE && isDark -> "日间模式"
+    item == MenuItem.READ_ALOUD && isSpeaking -> "停止朗读"
+    else -> item.label
+}
 
 @Composable
 private fun MenuPanel(
@@ -611,6 +626,8 @@ private fun MenuPanel(
             MenuItem.SETTINGS -> onOpenOverlay(OverlayPage.SETTINGS)
             MenuItem.REFRESH -> controller.reload()
             MenuItem.VIEW_SOURCE -> onViewSource()
+            MenuItem.PRINT -> controller.printPage()
+            MenuItem.READ_ALOUD -> controller.toggleReadAloud()
             MenuItem.COPY_URL -> copyToClipboard(context, controller.currentUrl)
             MenuItem.SHARE -> shareUrl(context, controller.currentUrl)
             MenuItem.DARK_TOGGLE -> ThemeController.set(context, if (isDark) 1 else 2)
@@ -670,14 +687,14 @@ private fun MenuPanel(
                                         verticalArrangement = Arrangement.Center
                                     ) {
                                         Icon(
-                                            menuIcon(item, isDark),
-                                            contentDescription = menuLabel(item, isDark),
+                                            menuIcon(item, isDark, controller.isSpeaking),
+                                            contentDescription = menuLabel(item, isDark, controller.isSpeaking),
                                             tint = MaterialTheme.colorScheme.onSurface,
                                             modifier = Modifier.size(24.dp)
                                         )
                                         Spacer(Modifier.height(5.dp))
                                         Text(
-                                            menuLabel(item, isDark),
+                                            menuLabel(item, isDark, controller.isSpeaking),
                                             fontSize = 11.sp,
                                             maxLines = 1,
                                             textAlign = TextAlign.Center,

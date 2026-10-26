@@ -13,6 +13,8 @@ enum class MenuItem(val key: String, val label: String) {
     SETTINGS("settings", "设置"),
     REFRESH("refresh", "刷新"),
     VIEW_SOURCE("view_source", "网页源码"),
+    PRINT("print", "打印 / PDF"),
+    READ_ALOUD("read_aloud", "朗读网页"),
     COPY_URL("copy_url", "复制链接"),
     SHARE("share", "分享"),
     DARK_TOGGLE("dark_toggle", "夜间模式"),

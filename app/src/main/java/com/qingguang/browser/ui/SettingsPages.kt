@@ -1,8 +1,10 @@
 package com.qingguang.browser.ui
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
@@ -315,6 +317,7 @@ private fun BrowsingSettings(controller: BrowserController) {
     var engine by remember { mutableStateOf(app.settings.searchEngine) }
     var zoom by remember { mutableStateOf(app.settings.textZoom) }
     var desktop by remember { mutableStateOf(app.settings.desktopMode) }
+    var orientation by remember { mutableStateOf(app.settings.screenOrientation) }
 
     SettingsGroup("搜索引擎")
     engines.forEach { (name, url) ->
@@ -348,6 +351,29 @@ private fun BrowsingSettings(controller: BrowserController) {
     SettingsSwitchRow("电脑模式（桌面版网页）", desktop) { value ->
         desktop = value
         if (app.settings.desktopMode != value) controller.toggleDesktopMode()
+    }
+
+    SettingsGroup("屏幕方向")
+    Row(
+        Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        listOf("跟随系统", "自动", "竖屏", "横屏").forEachIndexed { index, label ->
+            FilterChip(
+                selected = orientation == index,
+                onClick = {
+                    orientation = index
+                    app.settings.screenOrientation = index
+                    (context as? Activity)?.requestedOrientation = when (index) {
+                        1 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR
+                        2 -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                        3 -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                        else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    }
+                },
+                label = { Text(label, fontSize = 12.sp) }
+            )
+        }
     }
 }
 
@@ -476,7 +502,7 @@ private fun HomeSettings() {
         }
     }
     Text(
-        "最少 2 页，可一直增加到 99 页；第三页起每页最多可放 32 个图标。减少页数不会删除图标，超出页数的图标会暂时隐藏。",
+        "最少 2 页，可一直增加到 99 页；第一页 12 个、第二页 20 个、第三页起每页 32 个。减少页数不会删除图标，超出页数的图标会暂时隐藏。",
         fontSize = 11.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)

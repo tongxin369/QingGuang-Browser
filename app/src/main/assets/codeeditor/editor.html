@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<link rel="stylesheet" href="codemirror.min.css">
+<link rel="stylesheet" href="theme_material-darker.min.css">
+<style>
+  html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; background: #ffffff; }
+  body.dark { background: #212121; }
+  .CodeMirror {
+    height: 100%;
+    font-family: "JetBrains Mono", "Roboto Mono", monospace;
+    font-size: 12px;
+    line-height: 1.55;
+  }
+  .CodeMirror-gutters { border-right: 1px solid rgba(128, 128, 128, 0.22); }
+  .CodeMirror-linenumber { padding: 0 6px 0 6px; }
+  .CodeMirror-scroll { -webkit-overflow-scrolling: touch; }
+</style>
+</head>
+<body>
+<textarea id="code"></textarea>
+<script src="codemirror.min.js"></script>
+<script src="mode_xml_xml.min.js"></script>
+<script src="mode_javascript_javascript.min.js"></script>
+<script src="mode_css_css.min.js"></script>
+<script src="mode_htmlmixed_htmlmixed.min.js"></script>
+<script src="mode_markdown_markdown.min.js"></script>
+<script>
+  var editor = CodeMirror.fromTextArea(document.getElementById('code'), {
+    lineNumbers: true,
+    lineWrapping: true,
+    mode: 'htmlmixed',
+    indentUnit: 2,
+    tabSize: 2,
+    readOnly: false,
+    theme: 'default',
+    scrollbarStyle: 'native',
+    viewportMargin: 20
+  });
+
+  function notifyDirty() {
+    if (window.QingGuangEditor) {
+      QingGuangEditor.onDirty(!editor.isClean());
+    }
+  }
+  editor.on('change', notifyDirty);
+
+  window.setEditor = function (text, mode, readOnly, dark) {
+    editor.setOption('mode', mode || 'htmlmixed');
+    editor.setOption('readOnly', !!readOnly);
+    editor.setOption('theme', dark ? 'material-darker' : 'default');
+    document.body.className = dark ? 'dark' : '';
+    editor.setValue(text || '');
+    editor.clearHistory();
+    editor.markClean();
+    notifyDirty();
+    setTimeout(function () { editor.refresh(); }, 40);
+  };
+
+  window.getCode = function () {
+    return editor.getValue();
+  };
+
+  window.markClean = function () {
+    editor.markClean();
+    notifyDirty();
+  };
+
+  window.setDark = function (dark) {
+    editor.setOption('theme', dark ? 'material-darker' : 'default');
+    document.body.className = dark ? 'dark' : '';
+    editor.refresh();
+  };
+
+  window.gotoLine = function (line) {
+    var target = Math.max(0, (line || 1) - 1);
+    editor.setCursor({ line: target, ch: 0 });
+    editor.scrollIntoView({ line: target, ch: 0 }, 80);
+  };
+</script>
+</body>
+</html>

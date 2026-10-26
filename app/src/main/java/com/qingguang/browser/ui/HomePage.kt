@@ -2,7 +2,9 @@
 
 package com.qingguang.browser.ui
 
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.widget.Toast
@@ -75,6 +77,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -94,14 +98,18 @@ import com.qingguang.browser.web.BrowserController
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-/** 第一、二页 4 列 × 3 行 = 12 个图标；第三页起充分利用空间，每页 4 列 × 8 行 = 32 个 */
+/** 第一页 4 列 × 3 行 = 12 个；第二页 4 列 × 5 行 = 20 个；第三页起 4 列 × 8 行 = 32 个 */
 internal const val HOME_PAGE_CAPACITY = 12
+private const val SECOND_PAGE_CAPACITY = 20
 private const val EXTRA_PAGE_CAPACITY = 32
 private const val HOME_COLUMNS = 4
 
-/** 指定页面的图标容量：前两页 12 个，后续页面 32 个 */
-internal fun homePageCapacity(page: Int): Int =
-    if (page <= 1) HOME_PAGE_CAPACITY else EXTRA_PAGE_CAPACITY
+/** 指定页面的图标容量：第一页 12 个，第二页 20 个，后续页面 32 个 */
+internal fun homePageCapacity(page: Int): Int = when {
+    page <= 0 -> HOME_PAGE_CAPACITY
+    page == 1 -> SECOND_PAGE_CAPACITY
+    else -> EXTRA_PAGE_CAPACITY
+}
 
 private val pageNames = arrayOf("第一页", "第二页", "第三页", "第四页", "第五页", "第六页")
 
@@ -749,9 +757,10 @@ private fun HomeSecondPage(
     val scope = rememberCoroutineScope()
 
     val openFileLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val uri = result.data?.data
+        if (result.resultCode == Activity.RESULT_OK && uri != null) {
             scope.launch {
                 runCatching {
                     val name = queryDisplayName(context, uri) ?: "本地网页"
@@ -764,9 +773,10 @@ private fun HomeSecondPage(
     }
 
     val openTreeLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocumentTree()
-    ) { uri ->
-        if (uri != null) {
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val uri = result.data?.data
+        if (result.resultCode == Activity.RESULT_OK && uri != null) {
             scope.launch {
                 runCatching {
                     val name = DocumentFile.fromTreeUri(context, uri)?.name ?: "本地网页目录"
@@ -816,8 +826,31 @@ private fun HomeSecondPage(
                         Modifier.padding(top = 12.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        ActionChip("打开文件") { openFileLauncher.launch(arrayOf("*/*")) }
-                        ActionChip("打开文件夹") { openTreeLauncher.launch(null) }
+                        ActionChip("打开文件") {
+                            // 显式申请写权限，源码编辑器才能同步修改手机原文件
+                            openFileLauncher.launch(
+                                Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                                    addCategory(Intent.CATEGORY_OPENABLE)
+                                    type = "*/*"
+                                    addFlags(
+                                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                            Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                                    )
+                                }
+                            )
+                        }
+                        ActionChip("打开文件夹") {
+                            openTreeLauncher.launch(
+                                Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                                    addFlags(
+                                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                            Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                                    )
+                                }
+                            )
+                        }
                     }
                     TextButton(
                         onClick = {
@@ -847,7 +880,7 @@ private fun HomeSecondPage(
         } else {
             item {
                 HomeShortcutGrid(
-                    cells = buildHomeCells(items, autoCompact, HOME_PAGE_CAPACITY),
+                    cells = buildHomeCells(items, autoCompact, homePageCapacity(1)),
                     columns = HOME_COLUMNS,
                     allItems = allItems,
                     onOpen = onOpenItem,
@@ -1230,8 +1263,11 @@ private fun MiniShortcutIcon(item: HomeItem) {
                 item.iconText?.trim()?.take(1)?.takeIf { it.isNotBlank() }
                     ?: siteIconText(item.title, item.url).take(1),
                 fontSize = 9.sp,
+                lineHeight = 9.sp,
                 color = Color.White,
-                maxLines = 1
+                maxLines = 1,
+                textAlign = TextAlign.Center,
+                style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
             )
         }
     }

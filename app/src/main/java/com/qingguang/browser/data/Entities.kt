@@ -57,7 +57,11 @@ data class LocalPage(
     @PrimaryKey val siteId: String,
     val displayName: String,
     val entryUrl: String,
-    val lastOpenedAt: Long = System.currentTimeMillis()
+    val lastOpenedAt: Long = System.currentTimeMillis(),
+    /** 手机原始文件/目录的 SAF URI；null 表示未关联原文件（仅应用内副本） */
+    val sourceUri: String? = null,
+    /** "file" 单个文件；"tree" 整个目录 */
+    val sourceKind: String? = null
 )
 
 @Entity(tableName = "downloads")

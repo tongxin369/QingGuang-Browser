@@ -62,6 +62,11 @@ class SettingsStore(context: Context) {
         get() = prefs.getInt(KEY_APP_THEME, 0)
         set(value) = prefs.edit().putInt(KEY_APP_THEME, value).apply()
 
+    /** 屏幕方向：0 跟随系统，1 自动旋转，2 竖屏，3 横屏 */
+    var screenOrientation: Int
+        get() = prefs.getInt(KEY_SCREEN_ORIENTATION, 0).coerceIn(0, 3)
+        set(value) = prefs.edit().putInt(KEY_SCREEN_ORIENTATION, value.coerceIn(0, 3)).apply()
+
     /** 顶部地址栏与底部功能栏是否跟随网页主题色 */
     var followPageTheme: Boolean
         get() = prefs.getBoolean(KEY_FOLLOW_PAGE_THEME, true)
@@ -94,6 +99,7 @@ class SettingsStore(context: Context) {
         private const val KEY_DESKTOP_MODE = "desktop_mode"
         private const val KEY_DARK_MODE = "dark_mode"
         private const val KEY_APP_THEME = "app_theme"
+        private const val KEY_SCREEN_ORIENTATION = "screen_orientation"
         private const val KEY_FOLLOW_PAGE_THEME = "follow_page_theme"
         private const val KEY_BACKUP_TREE_URI = "backup_tree_uri"
         private const val KEY_MENU_ORDER = "menu_order"

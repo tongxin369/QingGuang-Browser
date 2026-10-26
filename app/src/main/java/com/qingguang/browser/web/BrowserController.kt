@@ -7,8 +7,13 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.res.Configuration
 import android.net.Uri
+import android.os.Bundle
 import android.os.Environment
+import android.print.PrintAttributes
+import android.print.PrintManager
 import android.provider.MediaStore
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Base64
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -37,13 +42,17 @@ import com.qingguang.browser.App
 import com.qingguang.browser.data.DownloadRecord
 import com.qingguang.browser.data.HistoryItem
 import com.qingguang.browser.util.BackupInfo
+import com.qingguang.browser.util.DownloadNotifier
 import com.qingguang.browser.util.SettingsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONTokener
+import java.net.HttpURLConnection
+import java.net.URL
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -58,6 +67,19 @@ data class TabSummary(
     val url: String,
     val isActive: Boolean
 )
+
+/** 等待用户确认的下载请求 */
+data class PendingDownload(
+    val url: String,
+    val userAgent: String,
+    val contentDisposition: String,
+    val mimeType: String,
+    val suggestedName: String,
+    val sizeBytes: Long? = null,
+    val sizeChecked: Boolean = false
+) {
+    val isBlobOrData: Boolean get() = url.startsWith("blob:") || url.startsWith("data:")
+}
 
 /**
  * 浏览器核心：多标签管理 + WebView 配置 + 本地资源拦截 + 下载 + 位置权限路由。
@@ -103,6 +125,10 @@ class BrowserController(private val activity: Activity) {
     var pageThemeColor by mutableStateOf<Int?>(null)
         private set
 
+    /** 待确认的下载（弹出确认框，确认后才真正下载） */
+    var pendingDownload by mutableStateOf<PendingDownload?>(null)
+        private set
+
     /** 顶/底栏是否跟随网页主题色 */
     var followPageTheme by mutableStateOf(app.settings.followPageTheme)
         private set
@@ -113,6 +139,16 @@ class BrowserController(private val activity: Activity) {
     /** 由 Activity 注入：处理网页内的文件选择（<input type="file">） */
     var fileChooserRequester:
         ((params: WebChromeClient.FileChooserParams, callback: (Array<Uri>?) -> Unit) -> Unit)? = null
+
+    /** 由 Activity 注入：申请 Android 13+ 通知权限 */
+    var notificationPermissionRequester: ((callback: (Boolean) -> Unit) -> Unit)? = null
+
+    /** 是否正在朗读网页 */
+    var isSpeaking by mutableStateOf(false)
+        private set
+
+    private var tts: TextToSpeech? = null
+    private var ttsLastUtterance: String? = null
 
     // ---------------- 容器与标签 ----------------
 
@@ -168,6 +204,7 @@ class BrowserController(private val activity: Activity) {
     }
 
     fun goHome() {
+        stopReadAloud()
         val empty = tabs.firstOrNull { it.webView.url.isNullOrEmpty() }
         if (empty != null) {
             activeIndex = tabs.indexOf(empty)
@@ -208,6 +245,7 @@ class BrowserController(private val activity: Activity) {
     }
 
     fun loadUrl(url: String) {
+        stopReadAloud()
         val tab = currentTab() ?: newTabInternal()
         showHome = false
         tab.webView.loadUrl(url)
@@ -239,6 +277,7 @@ class BrowserController(private val activity: Activity) {
 
     fun goBack(): Boolean {
         val tab = currentTab() ?: return false
+        stopReadAloud()
         return if (tab.webView.canGoBack()) {
             tab.webView.goBack()
             true
@@ -247,6 +286,7 @@ class BrowserController(private val activity: Activity) {
 
     fun goForward(): Boolean {
         val tab = currentTab() ?: return false
+        stopReadAloud()
         return if (tab.webView.canGoForward()) {
             tab.webView.goForward()
             true
@@ -365,7 +405,7 @@ class BrowserController(private val activity: Activity) {
         }
 
         webView.setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
-            startDownload(url, userAgent, contentDisposition, mimetype)
+            requestDownload(url, userAgent, contentDisposition, mimetype)
         })
         webView.addJavascriptInterface(BlobDownloadBridge(), "QingGuangDownload")
 
@@ -431,30 +471,84 @@ class BrowserController(private val activity: Activity) {
 
     // ---------------- 下载 ----------------
 
-    private fun startDownload(
+    /** 收到下载链接：先弹确认框，由用户确认（可改名）后再下载 */
+    private fun requestDownload(
         url: String,
         userAgent: String,
         contentDisposition: String,
         mimetype: String
     ) {
-        if (url.startsWith("blob:") || url.startsWith("data:")) {
-            downloadBlobOrData(url, contentDisposition, mimetype)
+        val fileName = if (url.startsWith("data:")) {
+            fallbackFileName(contentDisposition, mimetype)
+        } else {
+            URLUtil.guessFileName(url, contentDisposition, mimetype)
+        }
+        val pending = PendingDownload(
+            url = url,
+            userAgent = userAgent,
+            contentDisposition = contentDisposition,
+            mimeType = mimetype,
+            suggestedName = fileName
+        )
+        pendingDownload = pending
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            pendingDownload = pending.copy(sizeChecked = true)
             return
         }
-        val fileName = URLUtil.guessFileName(url, contentDisposition, mimetype)
+        // 预取文件大小，供确认框显示（失败则显示未知）
+        scope.launch {
+            val size = withContext(Dispatchers.IO) {
+                runCatching {
+                    val conn = URL(url).openConnection() as HttpURLConnection
+                    conn.requestMethod = "HEAD"
+                    conn.connectTimeout = 6000
+                    conn.readTimeout = 6000
+                    if (userAgent.isNotBlank()) conn.setRequestProperty("User-Agent", userAgent)
+                    conn.connect()
+                    val length = conn.contentLengthLong
+                    conn.disconnect()
+                    length.takeIf { it > 0 }
+                }.getOrNull()
+            }
+            pendingDownload = pendingDownload?.takeIf { it.url == url }
+                ?.copy(sizeBytes = size, sizeChecked = true)
+        }
+    }
+
+    fun cancelDownload() {
+        pendingDownload = null
+    }
+
+    /** 用户确认下载后执行（fileName 为弹窗中最终的文件名） */
+    fun confirmDownload(fileName: String) {
+        val pending = pendingDownload ?: return
+        pendingDownload = null
+        // Android 13+ 首次下载时申请通知权限（拒绝也不影响下载本身）
+        notificationPermissionRequester?.invoke { }
+        val finalName = sanitizeDownloadName(fileName).ifBlank { pending.suggestedName }
+        if (pending.isBlobOrData) {
+            downloadBlobOrData(pending.url, pending.contentDisposition, pending.mimeType, finalName)
+        } else {
+            enqueueDownload(pending, finalName)
+        }
+    }
+
+    private fun enqueueDownload(pending: PendingDownload, fileName: String) {
         runCatching {
-            val request = DownloadManager.Request(Uri.parse(url))
-                .setMimeType(mimetype)
+            val request = DownloadManager.Request(Uri.parse(pending.url))
+                .setMimeType(pending.mimeType)
                 .setTitle(fileName)
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
-            if (userAgent.isNotBlank()) request.addRequestHeader("User-Agent", userAgent)
+            if (pending.userAgent.isNotBlank()) {
+                request.addRequestHeader("User-Agent", pending.userAgent)
+            }
             val id = downloadManager.enqueue(request)
             scope.launch {
                 app.database.downloadDao().insert(
                     DownloadRecord(
                         fileName = fileName,
-                        url = url,
+                        url = pending.url,
                         localPath = "系统下载管理 #$id",
                         status = "已提交下载"
                     )
@@ -464,9 +558,18 @@ class BrowserController(private val activity: Activity) {
         }.onFailure { toast("下载失败：${it.message}") }
     }
 
+    private fun sanitizeDownloadName(name: String): String =
+        name.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
+
     /** blob/data 链接下载：data 直接解码，blob 通过 JS 读取后经桥接回传 */
-    private fun downloadBlobOrData(url: String, contentDisposition: String, mimetype: String) {
-        val fileName = fallbackFileName(contentDisposition, mimetype)
+    private fun downloadBlobOrData(
+        url: String,
+        contentDisposition: String,
+        mimetype: String,
+        nameOverride: String? = null
+    ) {
+        val fileName = nameOverride?.takeIf { it.isNotBlank() }
+            ?: fallbackFileName(contentDisposition, mimetype)
         if (url.startsWith("data:")) {
             val comma = url.indexOf(',')
             if (comma <= 0) {
@@ -550,6 +653,7 @@ class BrowserController(private val activity: Activity) {
                     )
                 )
             }
+            DownloadNotifier.notifyComplete(app, fileName)
             toast("下载完成：$fileName")
         }.onFailure { toast("下载失败：${it.message}") }
     }
@@ -636,6 +740,113 @@ class BrowserController(private val activity: Activity) {
         app.backups.backupSite(tab.webView, url, tab.webView.title ?: url) { _, _ -> }
     }
 
+    // ---------------- 打印 / 朗读 ----------------
+
+    /** 调用系统打印，可选择「另存为 PDF」 */
+    fun printPage() {
+        val webView = currentTab()?.webView ?: return
+        runCatching {
+            val manager = activity.getSystemService(Context.PRINT_SERVICE) as PrintManager
+            val jobName = (currentTitle.ifBlank { "网页" }) + ".pdf"
+            val adapter = webView.createPrintDocumentAdapter(jobName)
+            manager.print(
+                jobName,
+                adapter,
+                PrintAttributes.Builder()
+                    .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
+                    .build()
+            )
+        }.onFailure { toast("无法调用打印：${it.message}") }
+    }
+
+    /** 朗读当前网页正文，再次点击停止 */
+    fun toggleReadAloud() {
+        if (isSpeaking) {
+            stopReadAloud()
+            return
+        }
+        val webView = currentTab()?.webView ?: return
+        webView.evaluateJavascript(
+            "(function(){try{return document.body?document.body.innerText:'';}catch(e){return '';}})()"
+        ) { raw ->
+            val pageText = runCatching {
+                JSONTokener(raw).nextValue() as? String
+            }.getOrNull().orEmpty().trim()
+            if (pageText.isBlank()) {
+                toast("当前页面没有可朗读的文字")
+                return@evaluateJavascript
+            }
+            ensureTts()
+            val engine = tts ?: return@evaluateJavascript
+            val chunks = splitForTts(pageText)
+            if (chunks.isEmpty()) return@evaluateJavascript
+            engine.stop()
+            engine.setLanguage(Locale.getDefault())
+            ttsLastUtterance = "qingguang-${chunks.size - 1}"
+            chunks.forEachIndexed { index, chunk ->
+                val params = Bundle().apply {
+                    putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "qingguang-$index")
+                }
+                engine.speak(
+                    chunk,
+                    if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD,
+                    params,
+                    "qingguang-$index"
+                )
+            }
+            isSpeaking = true
+        }
+    }
+
+    fun stopReadAloud() {
+        tts?.stop()
+        isSpeaking = false
+    }
+
+    private fun ensureTts() {
+        if (tts != null) return
+        tts = TextToSpeech(activity) { status ->
+            if (status != TextToSpeech.SUCCESS) {
+                toast("系统语音引擎不可用")
+                tts = null
+                return@TextToSpeech
+            }
+            tts?.setLanguage(Locale.getDefault())
+            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) = Unit
+
+                override fun onDone(utteranceId: String?) {
+                    if (utteranceId == ttsLastUtterance) {
+                        activity.runOnUiThread { isSpeaking = false }
+                    }
+                }
+
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) {
+                    activity.runOnUiThread { isSpeaking = false }
+                }
+            })
+        }
+    }
+
+    /** 按句子切分，避免超过系统 TTS 单次朗读长度 */
+    private fun splitForTts(text: String): List<String> {
+        val max = 3000
+        val result = mutableListOf<String>()
+        var remaining = text.replace(Regex("\\n{2,}"), "\n").trim()
+        while (remaining.isNotEmpty()) {
+            if (remaining.length <= max) {
+                result.add(remaining)
+                break
+            }
+            var cut = remaining.lastIndexOfAny(charArrayOf('。', '！', '？', '.', '!', '?', '\n'), max)
+            if (cut < max / 2) cut = max
+            result.add(remaining.substring(0, cut + 1).trim())
+            remaining = remaining.substring(cut + 1).trim()
+        }
+        return result.filter { it.isNotBlank() }
+    }
+
     // ---------------- 工具 ----------------
 
     fun normalizeInput(input: String): String {
@@ -682,6 +893,9 @@ class BrowserController(private val activity: Activity) {
     }
 
     fun destroy() {
+        stopReadAloud()
+        tts?.shutdown()
+        tts = null
         container?.removeAllViews()
         tabs.forEach {
             it.webView.stopLoading()

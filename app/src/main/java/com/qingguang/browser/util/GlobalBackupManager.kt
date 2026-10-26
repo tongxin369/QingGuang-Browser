@@ -127,7 +127,9 @@ class GlobalBackupManager(
                             siteId = o.optString("siteId"),
                             displayName = o.optString("displayName"),
                             entryUrl = o.optString("entryUrl"),
-                            lastOpenedAt = o.optLong("lastOpenedAt", System.currentTimeMillis())
+                            lastOpenedAt = o.optLong("lastOpenedAt", System.currentTimeMillis()),
+                            sourceUri = o.optString("sourceUri").takeIf { it.isNotBlank() },
+                            sourceKind = o.optString("sourceKind").takeIf { it.isNotBlank() }
                         )
                     )
                 }
@@ -248,6 +250,8 @@ private fun LocalPage.toJson(): JSONObject = JSONObject().apply {
     put("displayName", displayName)
     put("entryUrl", entryUrl)
     put("lastOpenedAt", lastOpenedAt)
+    put("sourceUri", sourceUri)
+    put("sourceKind", sourceKind)
 }
 
 private fun SettingsStore.toJson(): JSONObject = JSONObject().apply {
