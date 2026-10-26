@@ -12,6 +12,7 @@ enum class MenuItem(val key: String, val label: String) {
     DATA_BACKUP("data_backup", "数据备份"),
     SETTINGS("settings", "设置"),
     REFRESH("refresh", "刷新"),
+    VIEW_SOURCE("view_source", "网页源码"),
     COPY_URL("copy_url", "复制链接"),
     SHARE("share", "分享"),
     DARK_TOGGLE("dark_toggle", "夜间模式"),

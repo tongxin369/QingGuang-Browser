@@ -3,14 +3,19 @@ package com.qingguang.browser.web
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.DownloadManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Environment
+import android.provider.MediaStore
+import android.util.Base64
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
 import android.webkit.GeolocationPermissions
+import android.webkit.JavascriptInterface
+import android.webkit.MimeTypeMap
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -40,6 +45,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import org.json.JSONTokener
 import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 
 class BrowserTab(val id: String, val webView: WebView)
@@ -212,6 +220,23 @@ class BrowserController(private val activity: Activity) {
         }
     }
 
+    /** 读取当前页面渲染后的 HTML 源码（在线页面只读查看用） */
+    fun fetchPageSource(callback: (String) -> Unit) {
+        val webView = currentTab()?.webView
+        if (webView == null) {
+            callback("")
+            return
+        }
+        webView.evaluateJavascript(
+            "(function(){return '<!DOCTYPE html>\\n' + document.documentElement.outerHTML;})()"
+        ) { raw ->
+            val text = runCatching {
+                JSONTokener(raw).nextValue() as? String
+            }.getOrNull()
+            callback(text ?: "")
+        }
+    }
+
     fun goBack(): Boolean {
         val tab = currentTab() ?: return false
         return if (tab.webView.canGoBack()) {
@@ -342,6 +367,7 @@ class BrowserController(private val activity: Activity) {
         webView.setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
             startDownload(url, userAgent, contentDisposition, mimetype)
         })
+        webView.addJavascriptInterface(BlobDownloadBridge(), "QingGuangDownload")
 
         return webView
     }
@@ -412,7 +438,7 @@ class BrowserController(private val activity: Activity) {
         mimetype: String
     ) {
         if (url.startsWith("blob:") || url.startsWith("data:")) {
-            toast("暂不支持 blob/data 链接下载")
+            downloadBlobOrData(url, contentDisposition, mimetype)
             return
         }
         val fileName = URLUtil.guessFileName(url, contentDisposition, mimetype)
@@ -436,6 +462,114 @@ class BrowserController(private val activity: Activity) {
             }
             toast("已加入下载：$fileName")
         }.onFailure { toast("下载失败：${it.message}") }
+    }
+
+    /** blob/data 链接下载：data 直接解码，blob 通过 JS 读取后经桥接回传 */
+    private fun downloadBlobOrData(url: String, contentDisposition: String, mimetype: String) {
+        val fileName = fallbackFileName(contentDisposition, mimetype)
+        if (url.startsWith("data:")) {
+            val comma = url.indexOf(',')
+            if (comma <= 0) {
+                toast("下载失败：链接格式不正确")
+                return
+            }
+            val meta = url.substring(5, comma)
+            val payload = url.substring(comma + 1)
+            val bytes = runCatching {
+                if (meta.contains("base64", ignoreCase = true)) {
+                    Base64.decode(payload, Base64.DEFAULT)
+                } else {
+                    Uri.decode(payload).toByteArray(Charsets.UTF_8)
+                }
+            }.getOrNull()
+            if (bytes == null) {
+                toast("下载失败：数据解析失败")
+                return
+            }
+            val mime = meta.substringBefore(';').ifBlank { mimetype }
+            saveDownloadedBytes(fileName, mime, bytes, url)
+            return
+        }
+        val webView = currentTab()?.webView
+        if (webView == null) {
+            toast("下载失败：当前没有页面")
+            return
+        }
+        val safeUrl = url.replace("\\", "\\\\").replace("'", "\\'")
+        val safeName = fileName.replace("\\", "\\\\").replace("'", "\\'")
+        val safeMime = mimetype.replace("\\", "\\\\").replace("'", "\\'")
+        val js = """
+            (function(){
+              fetch('$safeUrl').then(function(r){return r.blob();}).then(function(b){
+                var fr = new FileReader();
+                fr.onload = function(){
+                  var s = fr.result;
+                  var i = s.indexOf(',');
+                  QingGuangDownload.saveBase64('$safeName', b.type || '$safeMime', s.substring(i + 1));
+                };
+                fr.onerror = function(){ QingGuangDownload.fail('读取数据失败'); };
+                fr.readAsDataURL(b);
+              }).catch(function(e){ QingGuangDownload.fail(e.message); });
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
+    }
+
+    private fun fallbackFileName(contentDisposition: String, mimetype: String): String {
+        val guessed = runCatching {
+            URLUtil.guessFileName("", contentDisposition, mimetype)
+        }.getOrDefault("")
+        if (guessed.isNotBlank() && !guessed.startsWith("downloadfile")) return guessed
+        val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimetype) ?: "bin"
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.getDefault()).format(Date())
+        return "网页下载-$stamp.$ext"
+    }
+
+    private fun saveDownloadedBytes(fileName: String, mime: String, bytes: ByteArray, sourceUrl: String) {
+        runCatching {
+            val resolver = app.contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                put(MediaStore.Downloads.MIME_TYPE, mime.ifBlank { "application/octet-stream" })
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: error("无法创建文件")
+            resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: error("写入失败")
+            values.clear()
+            values.put(MediaStore.Downloads.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+            scope.launch {
+                app.database.downloadDao().insert(
+                    DownloadRecord(
+                        fileName = fileName,
+                        url = sourceUrl,
+                        localPath = "${Environment.DIRECTORY_DOWNLOADS}/$fileName",
+                        status = "下载完成"
+                    )
+                )
+            }
+            toast("下载完成：$fileName")
+        }.onFailure { toast("下载失败：${it.message}") }
+    }
+
+    /** 供网页 JS 调用的 blob 下载桥接 */
+    inner class BlobDownloadBridge {
+        @JavascriptInterface
+        fun saveBase64(name: String?, mime: String?, base64: String?) {
+            if (base64.isNullOrBlank()) return
+            val bytes = runCatching { Base64.decode(base64, Base64.DEFAULT) }.getOrNull() ?: return
+            val fileName = name?.takeIf { it.isNotBlank() } ?: fallbackFileName("", mime ?: "")
+            activity.runOnUiThread {
+                saveDownloadedBytes(fileName, mime ?: "", bytes, "blob")
+            }
+        }
+
+        @JavascriptInterface
+        fun fail(message: String?) {
+            activity.runOnUiThread { toast("下载失败：${message ?: "读取数据失败"}") }
+        }
     }
 
     // ---------------- 历史与备份 ----------------

@@ -94,12 +94,12 @@ import com.qingguang.browser.web.BrowserController
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-/** 第一、二页 4 列 × 3 行 = 12 个图标；第三页起充分利用空间，每页 4 列 × 7 行 = 28 个 */
+/** 第一、二页 4 列 × 3 行 = 12 个图标；第三页起充分利用空间，每页 4 列 × 8 行 = 32 个 */
 internal const val HOME_PAGE_CAPACITY = 12
-private const val EXTRA_PAGE_CAPACITY = 28
+private const val EXTRA_PAGE_CAPACITY = 32
 private const val HOME_COLUMNS = 4
 
-/** 指定页面的图标容量：前两页 12 个，后续页面 28 个 */
+/** 指定页面的图标容量：前两页 12 个，后续页面 32 个 */
 internal fun homePageCapacity(page: Int): Int =
     if (page <= 1) HOME_PAGE_CAPACITY else EXTRA_PAGE_CAPACITY
 
@@ -112,7 +112,7 @@ private const val SHORTCUT_HINT =
         "· 拖到另一个图标上：合并为分组\n" +
         "· 拖到空白格子：调整位置（关闭自动补位后可保留空位）\n" +
         "· 点击分组标题：重命名分组；分组内拖到空格可排序\n" +
-        "· 第一、二页各 12 个图标，第三页起每页 28 个，页面放满后新图标自动进入下一页"
+        "· 第一、二页各 12 个图标，第三页起每页 32 个，页面放满后新图标自动进入下一页"
 
 /** 首页：支持 2~99 页，第 1 页常驻主页，第 2 页本地网页模块，其余为快捷入口页 */
 @Composable
@@ -207,6 +207,7 @@ fun HomePage(
                     onOpenOverlay = onOpenOverlay,
                     onOpenLocalPages = { scope.launch { pagerState.animateScrollToPage(1) } },
                     items = pageItems,
+                    allItems = homeItems,
                     autoCompact = autoCompact,
                     onShowHint = { showHint = true },
                     onOpenItem = openItem,
@@ -222,6 +223,7 @@ fun HomePage(
                 1 -> HomeSecondPage(
                     controller = controller,
                     items = pageItems,
+                    allItems = homeItems,
                     autoCompact = autoCompact,
                     onShowHint = { showHint = true },
                     onOpenItem = openItem,
@@ -237,6 +239,7 @@ fun HomePage(
                 else -> HomeExtraPage(
                     pageIndex = page,
                     items = pageItems,
+                    allItems = homeItems,
                     autoCompact = autoCompact,
                     onShowHint = { showHint = true },
                     onOpenItem = openItem,
@@ -478,6 +481,7 @@ fun HomePage(
                         HomeShortcutGrid(
                             cells = cells,
                             columns = 3,
+                            allItems = homeItems,
                             onOpen = { child ->
                                 openFolder = null
                                 if (child.isFolder) openFolder = child
@@ -570,6 +574,7 @@ private fun HomeMainPage(
     onOpenOverlay: (OverlayPage) -> Unit,
     onOpenLocalPages: () -> Unit,
     items: List<HomeItem>,
+    allItems: List<HomeItem>,
     autoCompact: Boolean,
     onShowHint: () -> Unit,
     onOpenItem: (HomeItem) -> Unit,
@@ -714,6 +719,7 @@ private fun HomeMainPage(
                 HomeShortcutGrid(
                     cells = buildHomeCells(items, autoCompact, HOME_PAGE_CAPACITY),
                     columns = HOME_COLUMNS,
+                    allItems = allItems,
                     onOpen = onOpenItem,
                     onLongPress = onLongPress,
                     onMerge = onMerge,
@@ -730,6 +736,7 @@ private fun HomeMainPage(
 private fun HomeSecondPage(
     controller: BrowserController,
     items: List<HomeItem>,
+    allItems: List<HomeItem>,
     autoCompact: Boolean,
     onShowHint: () -> Unit,
     onOpenItem: (HomeItem) -> Unit,
@@ -842,6 +849,7 @@ private fun HomeSecondPage(
                 HomeShortcutGrid(
                     cells = buildHomeCells(items, autoCompact, HOME_PAGE_CAPACITY),
                     columns = HOME_COLUMNS,
+                    allItems = allItems,
                     onOpen = onOpenItem,
                     onLongPress = onLongPress,
                     onMerge = onMerge,
@@ -857,6 +865,7 @@ private fun HomeSecondPage(
 private fun HomeExtraPage(
     pageIndex: Int,
     items: List<HomeItem>,
+    allItems: List<HomeItem>,
     autoCompact: Boolean,
     onShowHint: () -> Unit,
     onOpenItem: (HomeItem) -> Unit,
@@ -886,6 +895,7 @@ private fun HomeExtraPage(
                 HomeShortcutGrid(
                     cells = buildHomeCells(items, autoCompact, homePageCapacity(pageIndex)),
                     columns = HOME_COLUMNS,
+                    allItems = allItems,
                     onOpen = onOpenItem,
                     onLongPress = onLongPress,
                     onMerge = onMerge,
@@ -1020,6 +1030,7 @@ private fun AppIconEntry(
 private fun HomeShortcutGrid(
     cells: List<HomeItem?>,
     columns: Int,
+    allItems: List<HomeItem>,
     onOpen: (HomeItem) -> Unit,
     onLongPress: (HomeItem) -> Unit,
     onMerge: (HomeItem, HomeItem) -> Unit,
@@ -1126,6 +1137,12 @@ private fun HomeShortcutGrid(
                             if (cell != null) {
                                 HomeShortcutIcon(
                                     item = cell,
+                                    children = if (cell.isFolder) {
+                                        allItems.filter { it.parentId == cell.id }
+                                            .sortedBy { it.sortOrder }
+                                    } else {
+                                        emptyList()
+                                    },
                                     highlight = !isDragging && hoverIndex == absoluteIndex,
                                     clickEnabled = dragging == null,
                                     modifier = Modifier
@@ -1152,9 +1169,78 @@ private fun HomeShortcutGrid(
     }
 }
 
+/** 透明式分组图标：半透明圆角底 + 组内前 4 个图标的小预览 */
+@Composable
+private fun FolderPreview(children: List<HomeItem>, highlight: Boolean) {
+    val shape = RoundedCornerShape(17.dp)
+    Box(
+        Modifier
+            .size(52.dp)
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.30f), shape)
+            .then(
+                if (highlight) {
+                    Modifier.border(2.dp, MaterialTheme.colorScheme.secondary, shape)
+                } else {
+                    Modifier
+                }
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        if (children.isEmpty()) {
+            FolderGlyph(Modifier.size(26.dp))
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                children.take(4).chunked(2).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                        row.forEach { child -> MiniShortcutIcon(child) }
+                        if (row.size == 1) Spacer(Modifier.size(20.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MiniShortcutIcon(item: HomeItem) {
+    if (item.isFolder) {
+        Box(
+            Modifier
+                .size(20.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f)),
+            contentAlignment = Alignment.Center
+        ) {
+            FolderGlyph(Modifier.size(13.dp))
+        }
+    } else {
+        Box(
+            Modifier
+                .size(20.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(
+                    item.iconColor?.let { Color(it) }
+                        ?: siteIconColor(item.title.ifBlank { item.url })
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                item.iconText?.trim()?.take(1)?.takeIf { it.isNotBlank() }
+                    ?: siteIconText(item.title, item.url).take(1),
+                fontSize = 9.sp,
+                color = Color.White,
+                maxLines = 1
+            )
+        }
+    }
+}
+
 @Composable
 private fun HomeShortcutIcon(
     item: HomeItem,
+    children: List<HomeItem> = emptyList(),
     highlight: Boolean,
     clickEnabled: Boolean,
     modifier: Modifier = Modifier,
@@ -1166,20 +1252,7 @@ private fun HomeShortcutIcon(
         verticalArrangement = Arrangement.Center
     ) {
         if (item.isFolder) {
-            Box(
-                Modifier
-                    .size(52.dp)
-                    .then(
-                        if (highlight) {
-                            Modifier.border(2.dp, MaterialTheme.colorScheme.secondary, RoundedCornerShape(16.dp))
-                        } else {
-                            Modifier
-                        }
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                FolderGlyph(Modifier.size(52.dp))
-            }
+            FolderPreview(children = children, highlight = highlight)
         } else {
             Box(
                 Modifier

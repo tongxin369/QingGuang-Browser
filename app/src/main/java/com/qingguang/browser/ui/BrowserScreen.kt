@@ -38,12 +38,17 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.outlined.ChevronLeft
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.DarkMode
@@ -130,6 +135,7 @@ fun BrowserScreen(controller: BrowserController) {
     var showTabs by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showAddBookmark by remember { mutableStateOf(false) }
+    var showSource by remember { mutableStateOf(false) }
 
     LaunchedEffect(controller.currentUrl) {
         if (!controller.showHome) address = controller.currentUrl
@@ -197,7 +203,8 @@ fun BrowserScreen(controller: BrowserController) {
                         showMenu = false
                         overlay = it
                     },
-                    onAddBookmark = { showAddBookmark = true }
+                    onAddBookmark = { showAddBookmark = true },
+                    onViewSource = { showSource = true }
                 )
             }
         }
@@ -223,6 +230,9 @@ fun BrowserScreen(controller: BrowserController) {
             controller = controller,
             onClose = { overlay = null }
         )
+    }
+    if (showSource) {
+        SourceEditorOverlay(controller = controller, onClose = { showSource = false })
     }
 }
 
@@ -322,29 +332,29 @@ private fun BottomBar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             BarIcon(
-                icon = Icons.AutoMirrored.Filled.ArrowBack,
+                icon = Icons.Outlined.ChevronLeft,
                 desc = "后退",
                 enabled = controller.canGoBack,
                 content = colors.content
             ) { controller.goBack() }
             BarIcon(
-                icon = Icons.AutoMirrored.Filled.ArrowForward,
+                icon = Icons.Outlined.ChevronRight,
                 desc = "前进",
                 enabled = controller.canGoForward,
                 content = colors.content
             ) { controller.goForward() }
             BarIcon(
-                icon = Icons.Filled.Home,
-                desc = "主页",
+                icon = Icons.Outlined.Menu,
+                desc = "菜单",
                 enabled = true,
                 content = colors.content
-            ) { controller.goHome() }
+            ) { onMenu() }
             IconButton(onClick = onShowTabs) {
-                // Via 风格：圆角方框 + 内部数字表示标签数量
+                // X 浏览器风格：圆角方框 + 内部数字表示标签数量
                 Box(
                     Modifier
-                        .size(21.dp)
-                        .border(1.6.dp, colors.content, RoundedCornerShape(5.dp)),
+                        .size(20.dp)
+                        .border(1.4.dp, colors.content, RoundedCornerShape(5.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
@@ -355,11 +365,11 @@ private fun BottomBar(
                 }
             }
             BarIcon(
-                icon = Icons.Filled.MoreVert,
-                desc = "菜单",
+                icon = Icons.Outlined.Home,
+                desc = "主页",
                 enabled = true,
                 content = colors.content
-            ) { onMenu() }
+            ) { controller.goHome() }
         }
     }
 }
@@ -549,6 +559,7 @@ private fun menuIcon(item: MenuItem, isDark: Boolean): ImageVector = when (item)
     MenuItem.DATA_BACKUP -> Icons.Filled.Backup
     MenuItem.SETTINGS -> Icons.Filled.Settings
     MenuItem.REFRESH -> Icons.Filled.Refresh
+    MenuItem.VIEW_SOURCE -> Icons.Filled.Code
     MenuItem.COPY_URL -> Icons.Filled.ContentCopy
     MenuItem.SHARE -> Icons.Filled.Share
     MenuItem.DARK_TOGGLE -> if (isDark) Icons.Filled.LightMode else Icons.Filled.DarkMode
@@ -566,7 +577,8 @@ private fun MenuPanel(
     controller: BrowserController,
     onDismiss: () -> Unit,
     onOpenOverlay: (OverlayPage) -> Unit,
-    onAddBookmark: () -> Unit
+    onAddBookmark: () -> Unit,
+    onViewSource: () -> Unit
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as App
@@ -598,6 +610,7 @@ private fun MenuPanel(
             MenuItem.DATA_BACKUP -> onOpenOverlay(OverlayPage.DATA_BACKUPS)
             MenuItem.SETTINGS -> onOpenOverlay(OverlayPage.SETTINGS)
             MenuItem.REFRESH -> controller.reload()
+            MenuItem.VIEW_SOURCE -> onViewSource()
             MenuItem.COPY_URL -> copyToClipboard(context, controller.currentUrl)
             MenuItem.SHARE -> shareUrl(context, controller.currentUrl)
             MenuItem.DARK_TOGGLE -> ThemeController.set(context, if (isDark) 1 else 2)

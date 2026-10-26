@@ -476,7 +476,7 @@ private fun HomeSettings() {
         }
     }
     Text(
-        "最少 2 页，可一直增加到 99 页；第三页起每页最多可放 28 个图标。减少页数不会删除图标，超出页数的图标会暂时隐藏。",
+        "最少 2 页，可一直增加到 99 页；第三页起每页最多可放 32 个图标。减少页数不会删除图标，超出页数的图标会暂时隐藏。",
         fontSize = 11.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)
