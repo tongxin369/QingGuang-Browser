@@ -183,3 +183,15 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads ORDER BY createdAt DESC LIMIT 200")
     suspend fun all(): List<DownloadRecord>
 }
+
+@Dao
+interface OfflinePageDao {
+    @Query("SELECT * FROM offline_pages ORDER BY createdAt DESC")
+    fun observeAll(): Flow<List<OfflinePage>>
+
+    @Insert
+    suspend fun insert(page: OfflinePage): Long
+
+    @Query("DELETE FROM offline_pages WHERE id = :id")
+    suspend fun delete(id: Long)
+}

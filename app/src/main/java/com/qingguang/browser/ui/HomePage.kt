@@ -100,6 +100,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.qingguang.browser.App
 import com.qingguang.browser.R
 import com.qingguang.browser.data.HomeItem
+import com.qingguang.browser.data.LocalPage
 import com.qingguang.browser.util.LocalSiteManager
 import com.qingguang.browser.web.BrowserController
 import kotlinx.coroutines.Dispatchers
@@ -615,153 +616,140 @@ private fun HomeMainPage(
         buildHomeCells(items, autoCompact, HOME_PAGE_CAPACITY)
     }
 
-    LazyColumn(
+    // 首页固定不滚动：网格占满剩余高度，空间不足时压缩图标行高，避免与底部三个点重叠
+    Column(
         Modifier
             .fillMaxSize()
             .pointerInput(Unit) {
                 detectTapGestures(onTap = { focusManager.clearFocus() })
-            },
-        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 18.dp)
+            }
+            .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 24.dp)
     ) {
-        item {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "轻光",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.weight(1f)
-                )
-                IconButton(onClick = { onOpenOverlay(OverlayPage.SETTINGS) }) {
-                    Icon(
-                        Icons.Filled.Settings,
-                        contentDescription = "设置",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-        }
-
-        item {
-            Spacer(Modifier.height(28.dp))
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Image(
-                    painter = painterResource(R.drawable.ic_launcher_foreground),
-                    contentDescription = null,
-                    modifier = Modifier.size(104.dp)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "轻光",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = { onOpenOverlay(OverlayPage.SETTINGS) }) {
+                Icon(
+                    Icons.Filled.Settings,
+                    contentDescription = "设置",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
                 )
             }
-            Spacer(Modifier.height(24.dp))
         }
 
-        item {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(24.dp)),
-                shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surface
-            ) {
-                Row(
-                    Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Filled.Search,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(19.dp)
-                    )
-                    Spacer(Modifier.size(10.dp))
-                    BasicTextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        singleLine = true,
-                        textStyle = LocalTextStyle.current.copy(
-                            fontSize = 15.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        ),
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.secondary),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = {
-                            if (query.isNotBlank()) {
-                                controller.submitInput(query)
-                                query = ""
-                            }
-                        }),
-                        modifier = Modifier.fillMaxSize(),
-                        decorationBox = { inner ->
-                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) {
-                                if (query.isBlank()) {
-                                    Text(
-                                        "搜索或输入网址",
-                                        fontSize = 15.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                    )
-                                }
-                                inner()
-                            }
-                        }
-                    )
-                }
-            }
-            Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(18.dp))
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Image(
+                painter = painterResource(R.drawable.ic_launcher_foreground),
+                contentDescription = null,
+                modifier = Modifier.size(104.dp)
+            )
         }
+        Spacer(Modifier.height(18.dp))
 
-        item {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(24.dp)),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface
+        ) {
             Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
+                Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                AppIconEntry("书签", Icons.Filled.BookmarkBorder, Color(0xFF5B8C5A)) {
-                    onOpenOverlay(OverlayPage.BOOKMARKS)
-                }
-                AppIconEntry("历史", Icons.Filled.History, Color(0xFF8E5A6E)) {
-                    onOpenOverlay(OverlayPage.HISTORY)
-                }
-                AppIconEntry("下载", Icons.Filled.Download, Color(0xFF4A6FA5)) {
-                    onOpenOverlay(OverlayPage.DOWNLOADS)
-                }
-                AppIconEntry("备份", Icons.Filled.Backup, Color(0xFF6C4BD8)) {
-                    onOpenOverlay(OverlayPage.DATA_BACKUPS)
-                }
-                AppIconEntry("本地网页", Icons.Filled.FolderOpen, Color(0xFFC7A34A), onClick = onOpenLocalPages)
+                Icon(
+                    Icons.Filled.Search,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(19.dp)
+                )
+                Spacer(Modifier.size(10.dp))
+                BasicTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    textStyle = LocalTextStyle.current.copy(
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    ),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.secondary),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = {
+                        if (query.isNotBlank()) {
+                            controller.submitInput(query)
+                            query = ""
+                        }
+                    }),
+                    modifier = Modifier.fillMaxSize(),
+                    decorationBox = { inner ->
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) {
+                            if (query.isBlank()) {
+                                Text(
+                                    "搜索或输入网址",
+                                    fontSize = 15.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                )
+                            }
+                            inner()
+                        }
+                    }
+                )
             }
-            Spacer(Modifier.height(26.dp))
         }
+        Spacer(Modifier.height(18.dp))
 
-        item {
-            ShortcutHeader(pageLabel = null, onShowHint = onShowHint, onOpenBookmarks = {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            AppIconEntry("书签", Icons.Filled.BookmarkBorder, Color(0xFF5B8C5A)) {
                 onOpenOverlay(OverlayPage.BOOKMARKS)
-            })
+            }
+            AppIconEntry("历史", Icons.Filled.History, Color(0xFF8E5A6E)) {
+                onOpenOverlay(OverlayPage.HISTORY)
+            }
+            AppIconEntry("下载", Icons.Filled.Download, Color(0xFF4A6FA5)) {
+                onOpenOverlay(OverlayPage.DOWNLOADS)
+            }
+            AppIconEntry("备份", Icons.Filled.Backup, Color(0xFF6C4BD8)) {
+                onOpenOverlay(OverlayPage.DATA_BACKUPS)
+            }
+            AppIconEntry("本地网页", Icons.Filled.FolderOpen, Color(0xFFC7A34A), onClick = onOpenLocalPages)
         }
+        Spacer(Modifier.height(18.dp))
+
+        ShortcutHeader(pageLabel = null, onShowHint = onShowHint, onOpenBookmarks = {
+            onOpenOverlay(OverlayPage.BOOKMARKS)
+        })
 
         if (items.isEmpty()) {
-            item {
-                Text(
-                    "还没有首页快捷入口。添加书签时勾选「添加到首页」，或在书签长按菜单里选「添加到首页」。",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 12.dp)
-                )
-            }
+            Text(
+                "还没有首页快捷入口。添加书签时勾选「添加到首页」，或在书签长按菜单里选「添加到首页」。",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 12.dp)
+            )
         } else {
-            item {
-                HomeShortcutGrid(
-                    cells = shortcutCells,
-                    columns = HOME_COLUMNS,
-                    allItems = allItems,
-                    onOpen = onOpenItem,
-                    onLongPress = onLongPress,
-                    onMerge = onMerge,
-                    onMoveToSlot = onMoveToSlot
-                )
-            }
-            item { Spacer(Modifier.height(12.dp)) }
+            HomeShortcutGrid(
+                cells = shortcutCells,
+                columns = HOME_COLUMNS,
+                allItems = allItems,
+                onOpen = onOpenItem,
+                onLongPress = onLongPress,
+                onMerge = onMerge,
+                onMoveToSlot = onMoveToSlot,
+                modifier = Modifier.weight(1f)
+            )
         }
     }
 }
@@ -785,6 +773,42 @@ private fun HomeSecondPage(
     val shortcutCells = remember(items, autoCompact) {
         buildHomeCells(items, autoCompact, homePageCapacity(1))
     }
+    val localPages by app.database.localPageDao()
+        .observeAll()
+        .collectAsStateWithLifecycle(initialValue = emptyList())
+    var chooserPage by remember { mutableStateOf<LocalPage?>(null) }
+    var chooserFiles by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    fun openLocalPage(page: LocalPage, relativePath: String? = null) {
+        scope.launch {
+            val url = if (relativePath != null) {
+                app.localSites.entryUrlFor(page, relativePath)
+            } else {
+                page.entryUrl
+            }
+            app.database.localPageDao().upsert(
+                page.copy(entryUrl = url, lastOpenedAt = System.currentTimeMillis())
+            )
+            controller.loadUrl(url)
+        }
+    }
+
+    /** 文件夹里可能有几十个 HTML：导入后先列出全部文件让用户选入口 */
+    fun showEntryChooser(page: LocalPage) {
+        scope.launch {
+            val files = withContext(Dispatchers.IO) { app.localSites.htmlFiles(page) }
+            if (files.isEmpty()) {
+                toast(context, "该文件夹里没有 .html 文件")
+                return@launch
+            }
+            if (files.size == 1) {
+                openLocalPage(page, files.first())
+            } else {
+                chooserFiles = files
+                chooserPage = page
+            }
+        }
+    }
 
     val openFileLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -796,7 +820,7 @@ private fun HomeSecondPage(
                     val name = queryDisplayName(context, uri) ?: "本地网页"
                     val page = app.localSites.importSingleHtml(uri, name)
                     app.database.localPageDao().upsert(page)
-                    controller.loadUrl(page.entryUrl)
+                    openLocalPage(page)
                 }.onFailure { toast(context, it.message ?: "导入失败") }
             }
         }
@@ -812,18 +836,18 @@ private fun HomeSecondPage(
                     val name = DocumentFile.fromTreeUri(context, uri)?.name ?: "本地网页目录"
                     val page = app.localSites.importDirectory(uri, name)
                     app.database.localPageDao().upsert(page)
-                    controller.loadUrl(page.entryUrl)
+                    showEntryChooser(page)
                 }.onFailure { toast(context, it.message ?: "导入失败") }
             }
         }
     }
 
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 18.dp)
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 24.dp)
     ) {
-        item {
-            Surface(
+        Surface(
                 modifier = Modifier
                     .fillMaxWidth()
                     .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(16.dp)),
@@ -889,38 +913,115 @@ private fun HomeSecondPage(
                         contentPadding = PaddingValues(0.dp),
                         modifier = Modifier.padding(top = 6.dp)
                     ) { Text("打开内置示例网页", fontSize = 13.sp) }
+                    if (localPages.isNotEmpty()) {
+                        Text(
+                            "已导入 ${localPages.size} 个本地网页（点击打开，点「换入口」切换子网页）",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                        Column(
+                            Modifier
+                                .heightIn(max = 132.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            localPages.forEach { page ->
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable { openLocalPage(page) }
+                                        .padding(vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            page.displayName,
+                                            fontSize = 13.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            page.entryUrl.substringAfterLast('/'),
+                                            fontSize = 11.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    if (page.sourceKind == "tree") {
+                                        TextButton(onClick = { showEntryChooser(page) }) {
+                                            Text("换入口", fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            Spacer(Modifier.height(22.dp))
-        }
+        Spacer(Modifier.height(16.dp))
 
-        item {
-            ShortcutHeader(pageLabel = "第 2 页", onShowHint = onShowHint)
-        }
+        ShortcutHeader(pageLabel = "第 2 页", onShowHint = onShowHint)
 
         if (items.isEmpty()) {
-            item {
-                Text(
-                    "第二页还是空的。第一页放满后，新添加的快捷入口会自动出现在这里；也可以长按图标手动移入。",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 12.dp)
-                )
-            }
+            Text(
+                "第二页还是空的。第一页放满后，新添加的快捷入口会自动出现在这里；也可以长按图标手动移入。",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 12.dp)
+            )
         } else {
-            item {
-                HomeShortcutGrid(
-                    cells = shortcutCells,
-                    columns = HOME_COLUMNS,
-                    allItems = allItems,
-                    onOpen = onOpenItem,
-                    onLongPress = onLongPress,
-                    onMerge = onMerge,
-                    onMoveToSlot = onMoveToSlot
-                )
-            }
-            item { Spacer(Modifier.height(12.dp)) }
+            HomeShortcutGrid(
+                cells = shortcutCells,
+                columns = HOME_COLUMNS,
+                allItems = allItems,
+                onOpen = onOpenItem,
+                onLongPress = onLongPress,
+                onMerge = onMerge,
+                onMoveToSlot = onMoveToSlot,
+                modifier = Modifier.weight(1f)
+            )
         }
+    }
+
+    chooserPage?.let { page ->
+        AlertDialog(
+            onDismissRequest = { chooserPage = null },
+            title = { Text("选择要打开的网页") },
+            text = {
+                Column {
+                    Text(
+                        "共 ${chooserFiles.size} 个 HTML 文件，选择后会记住这个入口。",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Column(
+                        Modifier
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        chooserFiles.forEach { relative ->
+                            Text(
+                                relative,
+                                fontSize = 13.sp,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        chooserPage = null
+                                        openLocalPage(page, relative)
+                                    }
+                                    .padding(vertical = 10.dp, horizontal = 4.dp)
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { chooserPage = null }) { Text("取消") }
+            }
+        )
     }
 }
 
@@ -939,36 +1040,31 @@ private fun HomeExtraPage(
     val shortcutCells = remember(items, autoCompact) {
         buildHomeCells(items, autoCompact, homePageCapacity(pageIndex))
     }
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 18.dp)
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 24.dp)
     ) {
-        item {
-            ShortcutHeader(pageLabel = pageName(pageIndex), onShowHint = onShowHint)
-            Spacer(Modifier.height(14.dp))
-        }
+        ShortcutHeader(pageLabel = pageName(pageIndex), onShowHint = onShowHint)
+        Spacer(Modifier.height(14.dp))
         if (items.isEmpty()) {
-            item {
-                Text(
-                    "这一页还没有快捷入口。长按第一页的图标，选择「移入其他页」即可放到这里。",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 12.dp)
-                )
-            }
+            Text(
+                "这一页还没有快捷入口。长按第一页的图标，选择「移入其他页」即可放到这里。",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 12.dp)
+            )
         } else {
-            item {
-                HomeShortcutGrid(
-                    cells = shortcutCells,
-                    columns = HOME_COLUMNS,
-                    allItems = allItems,
-                    onOpen = onOpenItem,
-                    onLongPress = onLongPress,
-                    onMerge = onMerge,
-                    onMoveToSlot = onMoveToSlot
-                )
-            }
-            item { Spacer(Modifier.height(12.dp)) }
+            HomeShortcutGrid(
+                cells = shortcutCells,
+                columns = HOME_COLUMNS,
+                allItems = allItems,
+                onOpen = onOpenItem,
+                onLongPress = onLongPress,
+                onMerge = onMerge,
+                onMoveToSlot = onMoveToSlot,
+                modifier = Modifier.weight(1f)
+            )
         }
     }
 }
@@ -1100,7 +1196,8 @@ private fun HomeShortcutGrid(
     onOpen: (HomeItem) -> Unit,
     onLongPress: (HomeItem) -> Unit,
     onMerge: (HomeItem, HomeItem) -> Unit,
-    onMoveToSlot: (HomeItem, Int) -> Unit
+    onMoveToSlot: (HomeItem, Int) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     var gridSize by remember { mutableStateOf(IntSize.Zero) }
     var dragging by remember { mutableStateOf<HomeItem?>(null) }
@@ -1109,26 +1206,36 @@ private fun HomeShortcutGrid(
     var hoverIndex by remember { mutableStateOf(-1) }
     val density = LocalDensity.current
     val gap = 4.dp
-    val rowHeight = 82.dp
 
-    fun slotAt(pos: Offset): Int {
-        if (gridSize.width <= 0) return -1
-        val gapPx = with(density) { gap.toPx() }
-        val rowPx = with(density) { rowHeight.toPx() }
-        val cellWidth = (gridSize.width - gapPx * (columns - 1)) / columns
-        if (cellWidth <= 0f) return -1
-        val column = (pos.x / (cellWidth + gapPx)).toInt().coerceIn(0, columns - 1)
-        val row = (pos.y / rowPx).toInt().coerceAtLeast(0)
-        val index = row * columns + column
-        return if (index in cells.indices) index else -1
-    }
-
-    Box(
-        Modifier
+    BoxWithConstraints(
+        modifier
             .fillMaxWidth()
             .onSizeChanged { gridSize = it }
-            .pointerInput(cells, columns) {
-                val tapSlop = with(density) { 12.dp.toPx() }
+    ) {
+        val rows = ((cells.size + columns - 1) / columns).coerceAtLeast(1)
+        // 空间不足时自动压缩行高，保证网格不超出屏幕、不与底部三个点重叠
+        val rowHeight = if (constraints.hasBoundedHeight) {
+            minOf(82.dp, maxHeight / rows)
+        } else {
+            82.dp
+        }
+
+        Box(
+            Modifier
+                .fillMaxSize()
+                .pointerInput(cells, columns, rowHeight) {
+                    fun slotAt(pos: Offset): Int {
+                        if (gridSize.width <= 0) return -1
+                        val gapPx = with(density) { gap.toPx() }
+                        val rowPx = with(density) { rowHeight.toPx() }
+                        val cellWidth = (gridSize.width - gapPx * (columns - 1)) / columns
+                        if (cellWidth <= 0f) return -1
+                        val column = (pos.x / (cellWidth + gapPx)).toInt().coerceIn(0, columns - 1)
+                        val row = (pos.y / rowPx).toInt().coerceAtLeast(0)
+                        val index = row * columns + column
+                        return if (index in cells.indices) index else -1
+                    }
+                    val tapSlop = with(density) { 12.dp.toPx() }
                 detectDragGesturesAfterLongPress(
                     onDragStart = { start ->
                         val index = slotAt(start)
@@ -1232,6 +1339,7 @@ private fun HomeShortcutGrid(
                 }
             }
         }
+    }
     }
 }
 

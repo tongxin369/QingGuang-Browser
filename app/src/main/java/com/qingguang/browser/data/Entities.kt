@@ -66,6 +66,17 @@ data class LocalPage(
     val sourceKind: String? = null
 )
 
+/** 离线保存的网页包：HTML + 图片/CSS/JS 一起放在 filesDir/offline/<dirName> */
+@Entity(tableName = "offline_pages")
+data class OfflinePage(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val title: String,
+    val url: String,
+    val dirName: String,
+    val totalBytes: Long = 0,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
 @Entity(tableName = "downloads")
 data class DownloadRecord(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,

@@ -46,8 +46,8 @@
     readOnly: false,
     theme: 'default',
     scrollbarStyle: 'native',
-    // 预渲染更多行，避免首次滚动到未浏览区域时因懒渲染而卡顿
-    viewportMargin: 600
+    // 全部渲染（CodeMirror 支持 Infinity），彻底消除首次滚动到未浏览区域时的卡顿
+    viewportMargin: Infinity
   });
 
   function notifyDirty() {

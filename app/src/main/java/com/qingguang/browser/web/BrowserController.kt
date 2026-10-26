@@ -42,6 +42,7 @@ import androidx.webkit.WebViewFeature
 import com.qingguang.browser.App
 import com.qingguang.browser.data.DownloadRecord
 import com.qingguang.browser.data.HistoryItem
+import com.qingguang.browser.data.OfflinePage
 import com.qingguang.browser.util.BackupInfo
 import com.qingguang.browser.util.DownloadNotifier
 import com.qingguang.browser.util.SettingsStore
@@ -52,6 +53,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONTokener
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -628,7 +630,13 @@ class BrowserController(private val activity: Activity) {
             toast("已退出阅读模式")
             return
         }
-        webView.evaluateJavascript(READER_JS) { result ->
+        val fontSize = app.settings.readerFontSize.coerceIn(14, 30)
+        val lineHeight = app.settings.readerLinePercent.coerceIn(120, 260) / 100f
+        val readerJs = READER_JS.replace(
+            "font-size:19px;line-height:1.9;",
+            "font-size:${fontSize}px;line-height:${lineHeight};"
+        )
+        webView.evaluateJavascript(readerJs) { result ->
             if (result == "true") {
                 readerMode = true
                 toast("已进入阅读模式，可在菜单中退出")
@@ -638,18 +646,102 @@ class BrowserController(private val activity: Activity) {
         }
     }
 
-    /** 保存当前网页为离线 HTML（不含外部图片和样式文件） */
+    /** 保存当前网页为离线包：HTML + 图片/CSS/JS 一并下载，断网也能打开 */
     fun saveCurrentPageOffline() {
         val title = currentTitle.ifBlank { "网页" }
         val url = currentUrl
+        if (!url.startsWith("http")) {
+            toast("只能保存在线网页")
+            return
+        }
+        toast("正在保存网页与资源…")
         fetchPageSource { html ->
             if (html.isBlank()) {
                 toast("无法获取网页内容")
                 return@fetchPageSource
             }
-            val base = sanitizeDownloadName(title).ifBlank { "网页" }
-            val fileName = if (base.endsWith(".html", true)) base else "$base.html"
-            saveDownloadedBytes(fileName, "text/html", html.toByteArray(Charsets.UTF_8), url)
+            scope.launch {
+                val saved = withContext(Dispatchers.IO) { buildOfflinePack(url, html) }
+                if (saved == null) {
+                    toast("离线保存失败")
+                } else {
+                    val page = OfflinePage(
+                        title = title,
+                        url = url,
+                        dirName = saved,
+                        totalBytes = offlinePackSize(saved)
+                    )
+                    app.database.offlinePageDao().insert(page)
+                    toast("已离线保存：${offlinePackSize(saved) / 1024} KB，可在菜单「离线网页」打开")
+                }
+            }
+        }
+    }
+
+    /** 下载 HTML 引用的图片/CSS/JS 到本地并改写路径，返回目录名 */
+    private fun buildOfflinePack(url: String, html: String): String? = runCatching {
+        val root = File(activity.filesDir, "offline")
+        val dirName = "p_" + System.currentTimeMillis()
+        val dir = File(root, dirName)
+        val assets = File(dir, "_assets")
+        if (!assets.mkdirs()) error("无法创建离线目录")
+        var rewritten = html
+        val refRegex = Regex("""(?:src|href|poster)=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        val refs = refRegex.findAll(html).map { it.groupValues[1] }.distinct().take(120).toList()
+        val base = URL(url)
+        var index = 0
+        var total = html.toByteArray(Charsets.UTF_8).size.toLong()
+        for (ref in refs) {
+            val lower = ref.lowercase()
+            if (lower.startsWith("data:") || lower.startsWith("#") || lower.startsWith("javascript:") ||
+                lower.startsWith("mailto:") || lower.startsWith("blob:")
+            ) continue
+            val ext = ref.substringBefore('?').substringBefore('#').substringAfterLast('.', "").lowercase()
+            if (ext !in OFFLINE_ASSET_EXTS) continue
+            val abs = runCatching { URL(base, ref).toString() }.getOrNull() ?: continue
+            if (!abs.startsWith("http")) continue
+            val bytes = fetchAssetBytes(abs) ?: continue
+            if (bytes.size > 8 * 1024 * 1024) continue
+            val name = "a${index++}.$ext"
+            File(assets, name).writeBytes(bytes)
+            total += bytes.size
+            rewritten = rewritten
+                .replace("\"$ref\"", "\"_assets/$name\"")
+                .replace("'$ref'", "'_assets/$name'")
+            if (total > 80L * 1024 * 1024) break
+        }
+        File(dir, "index.html").writeText(rewritten, Charsets.UTF_8)
+        dirName
+    }.getOrNull()
+
+    private fun offlinePackSize(dirName: String): Long {
+        val dir = File(File(activity.filesDir, "offline"), dirName)
+        return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+    }
+
+    private fun fetchAssetBytes(url: String): ByteArray? = runCatching {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = 12000
+        conn.readTimeout = 25000
+        conn.instanceFollowRedirects = true
+        conn.setRequestProperty("User-Agent", System.getProperty("http.agent") ?: "Mozilla/5.0")
+        CookieManager.getInstance().getCookie(url)?.takeIf { it.isNotBlank() }?.let {
+            conn.setRequestProperty("Cookie", it)
+        }
+        conn.inputStream.use { it.readBytes() }
+    }.getOrNull()
+
+    fun openOfflinePage(page: OfflinePage) {
+        loadUrl("https://appassets.androidplatform.net/files/offline/${page.dirName}/index.html")
+    }
+
+    fun deleteOfflinePage(page: OfflinePage) {
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                File(File(activity.filesDir, "offline"), page.dirName).deleteRecursively()
+                app.database.offlinePageDao().delete(page.id)
+            }
+            toast("已删除离线网页")
         }
     }
 
@@ -1040,6 +1132,20 @@ class BrowserController(private val activity: Activity) {
         toast("已清除网页缓存（不影响网页数据）")
     }
 
+    /** 退出无痕模式时清理浏览痕迹（Cookie、网页存储、表单、缓存），不动书签/下载等本地数据 */
+    fun clearIncognitoData() {
+        runCatching {
+            CookieManager.getInstance().removeAllCookies(null)
+            CookieManager.getInstance().flush()
+            WebStorage.getInstance().deleteAllData()
+            tabs.forEach {
+                it.webView.clearCache(true)
+                it.webView.clearFormData()
+                it.webView.clearHistory()
+            }
+        }
+    }
+
     /** 清除 Cookie 与网页存储：会影响包含本地网页在内的数据，调用前必须确认 */
     fun clearSiteData() {
         CookieManager.getInstance().removeAllCookies(null)
@@ -1379,6 +1485,12 @@ class BrowserController(private val activity: Activity) {
             "adcolony.com",
             "applovin.com",
             "unityads.unity3d.com"
+        )
+
+        /** 离线保存时一并下载的资源类型 */
+        private val OFFLINE_ASSET_EXTS = setOf(
+            "png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp", "avif",
+            "css", "js", "woff", "woff2", "ttf", "otf"
         )
 
         private const val AD_HIDE_JS =

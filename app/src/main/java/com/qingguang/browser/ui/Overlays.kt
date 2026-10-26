@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
@@ -87,6 +88,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -130,6 +132,7 @@ fun OverlayPageHost(
                 OverlayPage.BOOKMARKS -> BookmarksPage(controller, onClose)
                 OverlayPage.HISTORY -> HistoryPage(controller, onClose)
                 OverlayPage.DOWNLOADS -> DownloadsPage(controller)
+                OverlayPage.OFFLINE_PAGES -> OfflinePagesPage(controller, onClose)
                 OverlayPage.DATA_BACKUPS -> BackupsPage(controller)
                 OverlayPage.SETTINGS -> SettingsPage(controller)
             }
@@ -315,7 +318,12 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
         }
     }
 
-    Column(Modifier.fillMaxSize()) {
+    val focusManager = LocalFocusManager.current
+    Column(
+        Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) { detectTapGestures { focusManager.clearFocus() } }
+    ) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -1018,15 +1026,6 @@ private fun BookmarkListRow(
             Checkbox(checked = selected, onCheckedChange = { onClick() })
             Spacer(Modifier.width(4.dp))
         }
-        if (trailingHint != null) {
-            Icon(
-                Icons.Filled.MoreVert,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(16.dp)
-            )
-            Spacer(Modifier.width(8.dp))
-        }
         Box(
             Modifier.size(34.dp),
             contentAlignment = Alignment.Center
@@ -1069,11 +1068,17 @@ private fun BookmarkListRow(
                 )
             }
         } else {
-            Text(
-                trailingHint,
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Box(
+                Modifier.size(34.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Filled.DragHandle,
+                    contentDescription = "拖动排序",
+                    tint = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
         }
     }
 }
@@ -1696,6 +1701,85 @@ private fun queryDownload(manager: DownloadManager, id: Long): DownloadProgress?
         null
     } finally {
         cursor?.close()
+    }
+}
+
+@Composable
+private fun OfflinePagesPage(controller: BrowserController, onClose: () -> Unit) {
+    val context = LocalContext.current
+    val app = context.applicationContext as App
+    val pages by app.database.offlinePageDao()
+        .observeAll()
+        .collectAsStateWithLifecycle(initialValue = emptyList())
+    var pendingDelete by remember {
+        mutableStateOf<com.qingguang.browser.data.OfflinePage?>(null)
+    }
+
+    if (pages.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                "还没有离线网页。\n在网页菜单里选「保存网页」，图片和样式会一起保存。",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    } else {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 8.dp)
+        ) {
+            items(pages, key = { it.id }) { page ->
+                ListItem(
+                    leadingContent = {
+                        Icon(
+                            Icons.Filled.Folder,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.secondary
+                        )
+                    },
+                    headlineContent = {
+                        Text(page.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    },
+                    supportingContent = {
+                        Text(
+                            "${page.totalBytes / 1024} KB · ${page.url}",
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    trailingContent = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = {
+                                controller.openOfflinePage(page)
+                                onClose()
+                            }) { Text("打开") }
+                            IconButton(onClick = { pendingDelete = page }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "删除")
+                            }
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    pendingDelete?.let { page ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除离线网页") },
+            text = { Text("将删除「${page.title}」及其图片、样式文件，无法恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingDelete = null
+                    controller.deleteOfflinePage(page)
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+            }
+        )
     }
 }
 

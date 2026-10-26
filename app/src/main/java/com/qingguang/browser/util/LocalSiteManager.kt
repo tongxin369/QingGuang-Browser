@@ -306,6 +306,20 @@ class LocalSiteManager(private val context: Context) {
 
     fun siteDir(siteId: String): File = File(rootDir, siteId)
 
+    /** 列出站点内所有 HTML 文件（相对路径），供用户选择入口，避免几十个网页只能打开第一个 */
+    fun htmlFiles(page: LocalPage): List<String> {
+        val dir = siteDir(page.siteId)
+        if (!dir.isDirectory) return emptyList()
+        return dir.walkTopDown()
+            .filter { it.isFile && it.extension.lowercase() in setOf("html", "htm") }
+            .map { it.relativeTo(dir).invariantSeparatorsPath }
+            .sortedBy { it.lowercase() }
+            .toList()
+    }
+
+    fun entryUrlFor(page: LocalPage, relativePath: String): String =
+        urlFor(page.siteId, relativePath)
+
     fun deleteSite(siteId: String) {
         siteDir(siteId).deleteRecursively()
     }

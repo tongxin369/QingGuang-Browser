@@ -24,6 +24,9 @@ enum class MenuItem(val key: String, val label: String) {
     READER_MODE("reader_mode", "阅读模式"),
     OFFLINE_SAVE("offline_save", "保存网页"),
     DOWNLOAD_IMAGES("download_images", "下载图片"),
+    OFFLINE_LIST("offline_list", "离线网页"),
+    AD_BLOCK("ad_block", "广告拦截"),
+    INCOGNITO("incognito", "无痕模式"),
     CLEAR_CACHE("clear_cache", "清除缓存"),
     HOME("home", "主页"),
     CLOSE_TAB("close_tab", "关闭标签")

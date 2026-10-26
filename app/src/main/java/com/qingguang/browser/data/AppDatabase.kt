@@ -10,9 +10,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 @Database(
     entities = [
         Bookmark::class, BookmarkFolder::class, HomeItem::class, HistoryItem::class,
-        LocalPage::class, DownloadRecord::class
+        LocalPage::class, DownloadRecord::class, OfflinePage::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -22,6 +22,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun historyDao(): HistoryDao
     abstract fun localPageDao(): LocalPageDao
     abstract fun downloadDao(): DownloadDao
+    abstract fun offlinePageDao(): OfflinePageDao
 
     companion object {
         @Volatile
@@ -35,9 +36,25 @@ abstract class AppDatabase : RoomDatabase() {
                     "qingguang.db"
                 ).addMigrations(
                     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
-                    MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9
+                    MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
+                    MIGRATION_9_10
                 ).build().also { instance = it }
             }
+
+        /** v10：新增离线网页包记录 */
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `offline_pages` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`title` TEXT NOT NULL, " +
+                        "`url` TEXT NOT NULL, " +
+                        "`dirName` TEXT NOT NULL, " +
+                        "`totalBytes` INTEGER NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL)"
+                )
+            }
+        }
 
         /** v9：书签支持拖动排序 */
         private val MIGRATION_8_9 = object : Migration(8, 9) {

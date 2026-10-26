@@ -328,6 +328,8 @@ private fun BrowsingSettings(controller: BrowserController) {
     var adBlock by remember { mutableStateOf(app.settings.adBlock) }
     var showCustomEngine by remember { mutableStateOf(false) }
     var customEngine by remember { mutableStateOf(app.settings.searchEngine) }
+    var readerSize by remember { mutableStateOf(app.settings.readerFontSize) }
+    var readerLine by remember { mutableStateOf(app.settings.readerLinePercent) }
 
     SettingsGroup("搜索引擎")
     engines.forEach { (name, url) ->
@@ -363,6 +365,34 @@ private fun BrowsingSettings(controller: BrowserController) {
         onValueChangeFinished = { controller.applySettings() },
         valueRange = 50f..200f,
         steps = 29,
+        modifier = Modifier.padding(horizontal = 18.dp)
+    )
+
+    SettingsGroup("阅读模式排版")
+    Text(
+        "正文字号 ${readerSize}sp · 行距 ${"%.1f".format(readerLine / 100f)} 倍",
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.secondary,
+        modifier = Modifier.padding(horizontal = 18.dp)
+    )
+    Slider(
+        value = readerSize.toFloat(),
+        onValueChange = {
+            readerSize = it.toInt()
+            app.settings.readerFontSize = readerSize
+        },
+        valueRange = 14f..30f,
+        steps = 15,
+        modifier = Modifier.padding(horizontal = 18.dp)
+    )
+    Slider(
+        value = readerLine.toFloat(),
+        onValueChange = {
+            readerLine = it.toInt()
+            app.settings.readerLinePercent = readerLine
+        },
+        valueRange = 120f..260f,
+        steps = 13,
         modifier = Modifier.padding(horizontal = 18.dp)
     )
 
@@ -423,9 +453,10 @@ private fun BrowsingSettings(controller: BrowserController) {
     SettingsSwitchRow("无痕模式（不记录历史）", incognito) { value ->
         incognito = value
         app.settings.incognito = value
+        if (!value) controller.clearIncognitoData()
         Toast.makeText(
             context,
-            if (value) "已开启无痕模式，浏览历史不再记录" else "已关闭无痕模式",
+            if (value) "已开启无痕模式，浏览历史不再记录" else "已关闭无痕模式，浏览数据已清理",
             Toast.LENGTH_SHORT
         ).show()
     }

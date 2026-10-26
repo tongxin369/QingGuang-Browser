@@ -127,6 +127,16 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_HOME_WALLPAPER, null)
         set(value) = prefs.edit().putString(KEY_HOME_WALLPAPER, value).apply()
 
+    /** 阅读模式正文字号（sp） */
+    var readerFontSize: Int
+        get() = prefs.getInt(KEY_READER_FONT_SIZE, 19)
+        set(value) = prefs.edit().putInt(KEY_READER_FONT_SIZE, value).apply()
+
+    /** 阅读模式行高（百分比，190 表示 1.9 倍） */
+    var readerLinePercent: Int
+        get() = prefs.getInt(KEY_READER_LINE_PERCENT, 190)
+        set(value) = prefs.edit().putInt(KEY_READER_LINE_PERCENT, value).apply()
+
     companion object {
         private const val KEY_SEARCH_ENGINE = "search_engine"
         private const val KEY_AUTO_BACKUP = "auto_backup"
@@ -152,6 +162,8 @@ class SettingsStore(context: Context) {
         private const val KEY_AD_BLOCK = "ad_block"
         private const val KEY_INCOGNITO = "incognito"
         private const val KEY_HOME_WALLPAPER = "home_wallpaper"
+        private const val KEY_READER_FONT_SIZE = "reader_font_size"
+        private const val KEY_READER_LINE_PERCENT = "reader_line_percent"
 
         const val DEFAULT_SEARCH_ENGINE = "https://www.bing.com/search?q=%s"
         const val DESKTOP_UA =

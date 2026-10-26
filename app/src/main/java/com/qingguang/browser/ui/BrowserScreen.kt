@@ -46,6 +46,7 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.CloudUpload
@@ -59,6 +60,7 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.SaveAlt
@@ -76,6 +78,8 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -124,6 +128,7 @@ enum class OverlayPage(val title: String) {
     BOOKMARKS("书签"),
     HISTORY("历史"),
     DOWNLOADS("下载"),
+    OFFLINE_PAGES("离线网页"),
     DATA_BACKUPS("数据备份"),
     SETTINGS("设置")
 }
@@ -872,7 +877,12 @@ internal fun tabInitial(title: String, url: String): String {
     return source.take(1).uppercase()
 }
 
-private fun menuIcon(item: MenuItem, isDark: Boolean, isSpeaking: Boolean): ImageVector = when (item) {
+private fun menuIcon(
+    item: MenuItem,
+    isDark: Boolean,
+    isSpeaking: Boolean,
+    incognito: Boolean
+): ImageVector = when (item) {
     MenuItem.ADD_BOOKMARK -> Icons.Filled.BookmarkAdd
     MenuItem.BACKUP_PAGE -> Icons.Filled.CloudUpload
     MenuItem.BOOKMARKS -> Icons.Filled.BookmarkBorder
@@ -893,6 +903,9 @@ private fun menuIcon(item: MenuItem, isDark: Boolean, isSpeaking: Boolean): Imag
     MenuItem.READER_MODE -> Icons.Filled.Description
     MenuItem.OFFLINE_SAVE -> Icons.Filled.SaveAlt
     MenuItem.DOWNLOAD_IMAGES -> Icons.Filled.Image
+    MenuItem.OFFLINE_LIST -> Icons.Filled.FolderOpen
+    MenuItem.AD_BLOCK -> Icons.Filled.Block
+    MenuItem.INCOGNITO -> if (incognito) Icons.Filled.VisibilityOff else Icons.Filled.Visibility
     MenuItem.CLEAR_CACHE -> Icons.Filled.Delete
     MenuItem.HOME -> Icons.Filled.Home
     MenuItem.CLOSE_TAB -> Icons.Filled.Close
@@ -962,6 +975,26 @@ private fun MenuPanel(
             MenuItem.READER_MODE -> controller.toggleReaderMode()
             MenuItem.OFFLINE_SAVE -> controller.saveCurrentPageOffline()
             MenuItem.DOWNLOAD_IMAGES -> controller.downloadAllImages()
+            MenuItem.OFFLINE_LIST -> onOpenOverlay(OverlayPage.OFFLINE_PAGES)
+            MenuItem.AD_BLOCK -> {
+                app.settings.adBlock = !app.settings.adBlock
+                controller.applySettings()
+                Toast.makeText(
+                    context,
+                    if (app.settings.adBlock) "广告拦截已开启" else "广告拦截已关闭",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            MenuItem.INCOGNITO -> {
+                app.settings.incognito = !app.settings.incognito
+                if (!app.settings.incognito) controller.clearIncognitoData()
+                controller.applySettings()
+                Toast.makeText(
+                    context,
+                    if (app.settings.incognito) "无痕模式已开启" else "无痕模式已关闭，浏览数据已清理",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
             MenuItem.CLEAR_CACHE -> controller.clearCacheOnly()
             MenuItem.HOME -> controller.goHome()
             MenuItem.CLOSE_TAB -> controller.tabList.firstOrNull { it.isActive }
@@ -1017,7 +1050,10 @@ private fun MenuPanel(
                                         verticalArrangement = Arrangement.Center
                                     ) {
                                         Icon(
-                                            menuIcon(item, isDark, controller.isSpeaking),
+                                            menuIcon(
+                                                item, isDark, controller.isSpeaking,
+                                                app.settings.incognito
+                                            ),
                                             contentDescription = menuLabel(
                                                 item, isDark, controller.isSpeaking,
                                                 controller.readerMode
