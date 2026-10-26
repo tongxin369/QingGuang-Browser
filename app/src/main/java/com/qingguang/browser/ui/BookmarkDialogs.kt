@@ -176,12 +176,12 @@ fun AddBookmarkDialog(
                                 var page = 0
                                 val lastPage = (app.settings.homePageCount - 1).coerceAtLeast(0)
                                 while (page < lastPage &&
-                                    homeDao.countRootOnPage(page) >= HOME_PAGE_CAPACITY
+                                    homeDao.countRootOnPage(page) >= homePageCapacity(page)
                                 ) {
                                     page++
                                 }
                                 val used = homeDao.slotsOnPage(page).toSet()
-                                val slot = (0 until HOME_PAGE_CAPACITY)
+                                val slot = (0 until homePageCapacity(page))
                                     .firstOrNull { it !in used } ?: -1
                                 homeDao.insert(
                                     HomeItem(

@@ -32,10 +32,10 @@ class SettingsStore(context: Context) {
         get() = prefs.getInt(KEY_GLOBAL_BACKUP_KEEP, 10).coerceIn(1, 50)
         set(value) = prefs.edit().putInt(KEY_GLOBAL_BACKUP_KEEP, value.coerceIn(1, 50)).apply()
 
-    /** 首页快捷入口页数（含第一页），默认 2 页 */
+    /** 首页快捷入口页数（含第一页），默认 2 页，可按需扩展（上限 99 页） */
     var homePageCount: Int
-        get() = prefs.getInt(KEY_HOME_PAGE_COUNT, 2).coerceIn(2, 6)
-        set(value) = prefs.edit().putInt(KEY_HOME_PAGE_COUNT, value.coerceIn(2, 6)).apply()
+        get() = prefs.getInt(KEY_HOME_PAGE_COUNT, 2).coerceIn(2, 99)
+        set(value) = prefs.edit().putInt(KEY_HOME_PAGE_COUNT, value.coerceIn(2, 99)).apply()
 
     /** 快捷入口是否自动补位（关闭后拖动可以留空，位置不自动挤拢） */
     var homeAutoCompact: Boolean

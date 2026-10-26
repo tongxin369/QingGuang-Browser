@@ -94,10 +94,14 @@ import com.qingguang.browser.web.BrowserController
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-/** 每页 4 列 × 3 行 = 12 个图标 */
+/** 第一、二页 4 列 × 3 行 = 12 个图标；第三页起充分利用空间，每页 4 列 × 7 行 = 28 个 */
 internal const val HOME_PAGE_CAPACITY = 12
+private const val EXTRA_PAGE_CAPACITY = 28
 private const val HOME_COLUMNS = 4
-private const val HOME_ROWS = 3
+
+/** 指定页面的图标容量：前两页 12 个，后续页面 28 个 */
+internal fun homePageCapacity(page: Int): Int =
+    if (page <= 1) HOME_PAGE_CAPACITY else EXTRA_PAGE_CAPACITY
 
 private val pageNames = arrayOf("第一页", "第二页", "第三页", "第四页", "第五页", "第六页")
 
@@ -108,9 +112,9 @@ private const val SHORTCUT_HINT =
         "· 拖到另一个图标上：合并为分组\n" +
         "· 拖到空白格子：调整位置（关闭自动补位后可保留空位）\n" +
         "· 点击分组标题：重命名分组；分组内拖到空格可排序\n" +
-        "· 每页 12 个图标，第一页满了新图标会自动进入下一页"
+        "· 第一、二页各 12 个图标，第三页起每页 28 个，页面放满后新图标自动进入下一页"
 
-/** 首页：支持 2~6 页，第 1 页常驻主页，第 2 页本地网页模块，其余为快捷入口页 */
+/** 首页：支持 2~99 页，第 1 页常驻主页，第 2 页本地网页模块，其余为快捷入口页 */
 @Composable
 fun HomePage(
     controller: BrowserController,
@@ -121,7 +125,7 @@ fun HomePage(
     val context = LocalContext.current
     val app = context.applicationContext as App
     val scope = rememberCoroutineScope()
-    val totalPages = pageCount.coerceIn(2, 6)
+    val totalPages = pageCount.coerceIn(2, 99)
     val pagerState = rememberPagerState(pageCount = { totalPages })
 
     val homeItems by app.database.homeItemDao()
@@ -160,7 +164,7 @@ fun HomePage(
 
     suspend fun firstEmptySlot(page: Int): Int? {
         val used = app.database.homeItemDao().slotsOnPage(page).toSet()
-        return (0 until HOME_PAGE_CAPACITY).firstOrNull { it !in used }
+        return (0 until homePageCapacity(page)).firstOrNull { it !in used }
     }
 
     fun mergeItems(dragged: HomeItem, target: HomeItem, parentId: Long, page: Int) {
@@ -247,24 +251,34 @@ fun HomePage(
                 )
             }
         }
-        Row(
+        Box(
             Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
+            contentAlignment = Alignment.Center
         ) {
-            repeat(totalPages) { index ->
-                Box(
-                    Modifier
-                        .size(if (index == pagerState.currentPage) 6.dp else 5.dp)
-                        .background(
-                            if (index == pagerState.currentPage) {
-                                MaterialTheme.colorScheme.onSurface
-                            } else {
-                                MaterialTheme.colorScheme.outline
-                            },
-                            CircleShape
+            if (totalPages <= 8) {
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    repeat(totalPages) { index ->
+                        Box(
+                            Modifier
+                                .size(if (index == pagerState.currentPage) 6.dp else 5.dp)
+                                .background(
+                                    if (index == pagerState.currentPage) {
+                                        MaterialTheme.colorScheme.onSurface
+                                    } else {
+                                        MaterialTheme.colorScheme.outline
+                                    },
+                                    CircleShape
+                                )
                         )
+                    }
+                }
+            } else {
+                Text(
+                    "${pagerState.currentPage + 1} / $totalPages",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -288,15 +302,16 @@ fun HomePage(
             text = {
                 Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
                     (0 until totalPages).forEach { page ->
+                        val capacity = homePageCapacity(page)
                         val count = itemsByPage[page].size
                         val isCurrent = page == item.page
-                        val full = count >= HOME_PAGE_CAPACITY
+                        val full = count >= capacity
                         val label = buildString {
                             append(pageName(page))
                             append("（")
                             append(count)
                             append("/")
-                            append(HOME_PAGE_CAPACITY)
+                            append(capacity)
                             append("）")
                             if (isCurrent) append(" · 当前")
                             else if (full) append(" · 已满")
@@ -391,7 +406,7 @@ fun HomePage(
                                     val dao = app.database.homeItemDao()
                                     var page = 0
                                     while (page < totalPages - 1 &&
-                                        dao.countRootOnPage(page) >= HOME_PAGE_CAPACITY
+                                        dao.countRootOnPage(page) >= homePageCapacity(page)
                                     ) {
                                         page++
                                     }
@@ -697,7 +712,7 @@ private fun HomeMainPage(
         } else {
             item {
                 HomeShortcutGrid(
-                    cells = buildHomeCells(items, autoCompact),
+                    cells = buildHomeCells(items, autoCompact, HOME_PAGE_CAPACITY),
                     columns = HOME_COLUMNS,
                     onOpen = onOpenItem,
                     onLongPress = onLongPress,
@@ -825,7 +840,7 @@ private fun HomeSecondPage(
         } else {
             item {
                 HomeShortcutGrid(
-                    cells = buildHomeCells(items, autoCompact),
+                    cells = buildHomeCells(items, autoCompact, HOME_PAGE_CAPACITY),
                     columns = HOME_COLUMNS,
                     onOpen = onOpenItem,
                     onLongPress = onLongPress,
@@ -855,6 +870,7 @@ private fun HomeExtraPage(
     ) {
         item {
             ShortcutHeader(pageLabel = pageName(pageIndex), onShowHint = onShowHint)
+            Spacer(Modifier.height(14.dp))
         }
         if (items.isEmpty()) {
             item {
@@ -868,7 +884,7 @@ private fun HomeExtraPage(
         } else {
             item {
                 HomeShortcutGrid(
-                    cells = buildHomeCells(items, autoCompact),
+                    cells = buildHomeCells(items, autoCompact, homePageCapacity(pageIndex)),
                     columns = HOME_COLUMNS,
                     onOpen = onOpenItem,
                     onLongPress = onLongPress,
@@ -924,8 +940,12 @@ private fun ShortcutHeader(
     }
 }
 
-/** 把图标排进 4 列 × 3 行的格子；自动补位时顺序挤拢，否则按已保存的格子位置摆放 */
-private fun buildHomeCells(items: List<HomeItem>, autoCompact: Boolean): List<HomeItem?> {
+/** 把图标排进 4 列的格子；自动补位时顺序挤拢，否则按已保存的格子位置摆放 */
+private fun buildHomeCells(
+    items: List<HomeItem>,
+    autoCompact: Boolean,
+    capacity: Int
+): List<HomeItem?> {
     val ordered = items.sortedWith(
         compareBy(
             { if (it.slot < 0) Int.MAX_VALUE else it.slot },
@@ -933,7 +953,7 @@ private fun buildHomeCells(items: List<HomeItem>, autoCompact: Boolean): List<Ho
             { it.id }
         )
     )
-    val cells = MutableList<HomeItem?>(HOME_COLUMNS * HOME_ROWS) { null }
+    val cells = MutableList<HomeItem?>(capacity) { null }
     if (autoCompact) {
         ordered.forEachIndexed { index, item ->
             if (index < cells.size) cells[index] = item else cells.add(item)

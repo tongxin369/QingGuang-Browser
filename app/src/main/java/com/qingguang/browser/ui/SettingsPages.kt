@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Home
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -444,24 +446,37 @@ private fun HomeSettings() {
     var pages by remember { mutableStateOf(app.settings.homePageCount) }
     var compact by remember { mutableStateOf(app.settings.homeAutoCompact) }
 
-    SettingsGroup("快捷入口页数（每页 3 行 × 4 个）")
+    SettingsGroup("快捷入口页数（可自由扩展）")
     Row(
         Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        (2..6).forEach { value ->
-            FilterChip(
-                selected = pages == value,
-                onClick = {
-                    pages = value
-                    app.settings.homePageCount = value
-                },
-                label = { Text("$value 页") }
-            )
+        IconButton(
+            onClick = {
+                if (pages > 2) {
+                    pages--
+                    app.settings.homePageCount = pages
+                }
+            },
+            enabled = pages > 2
+        ) {
+            Icon(Icons.Filled.Remove, contentDescription = "减少页数", modifier = Modifier.size(20.dp))
+        }
+        Text("$pages 页", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+        IconButton(
+            onClick = {
+                if (pages < 99) {
+                    pages++
+                    app.settings.homePageCount = pages
+                }
+            },
+            enabled = pages < 99
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = "增加页数", modifier = Modifier.size(20.dp))
         }
     }
     Text(
-        "减少页数不会删除图标；超出页数的图标会暂时隐藏，增加页数后恢复。",
+        "最少 2 页，可一直增加到 99 页；第三页起每页最多可放 28 个图标。减少页数不会删除图标，超出页数的图标会暂时隐藏。",
         fontSize = 11.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)
