@@ -5,6 +5,7 @@ package com.qingguang.browser.ui
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.widget.Toast
@@ -15,8 +16,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -62,6 +65,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -71,11 +75,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
@@ -95,16 +103,35 @@ import com.qingguang.browser.R
 import com.qingguang.browser.data.HomeItem
 import com.qingguang.browser.util.LocalSiteManager
 import com.qingguang.browser.web.BrowserController
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
-/** 第一页 4 列 × 3 行 = 12 个；第二页 4 列 × 5 行 = 20 个；第三页起 4 列 × 8 行 = 32 个 */
-internal const val HOME_PAGE_CAPACITY = 12
-private const val SECOND_PAGE_CAPACITY = 20
+/** 第一页 4 列 × 4 行 = 16 个；第二页 4 列 × 6 行 = 24 个；第三页起 4 列 × 8 行 = 32 个 */
+internal const val HOME_PAGE_CAPACITY = 16
+private const val SECOND_PAGE_CAPACITY = 24
 private const val EXTRA_PAGE_CAPACITY = 32
 private const val HOME_COLUMNS = 4
 
-/** 指定页面的图标容量：第一页 12 个，第二页 20 个，后续页面 32 个 */
+/** 图标网格：每行高度、图标块与页面底部的固定间距 */
+private val HOME_ROW_HEIGHT = 82.dp
+private val HOME_BOTTOM_GAP = 30.dp
+private val HOME_GRID_COLUMNS = 4
+/** 底部导航栏高度，用于把各页图标网格对齐到同一水平线 */
+private val BOTTOM_BAR_HEIGHT = 54.dp
+/** 第一页除网格外的固定内容高度（含底部间距） */
+private val MAIN_PAGE_FIXED_HEIGHT = 456.dp
+/** 第二页除网格外的固定内容高度（本地网页模块 + 标题 + 底部间距） */
+private val SECOND_PAGE_FIXED_HEIGHT = 286.dp
+/** 第三页起除网格外的固定内容高度（标题 + 底部间距） */
+private val EXTRA_PAGE_FIXED_HEIGHT = 86.dp
+
+/** 把容量换算成 4 列的行数 */
+private fun gridRows(cellCount: Int): Int =
+    if (cellCount <= 0) 0 else (cellCount + HOME_GRID_COLUMNS - 1) / HOME_GRID_COLUMNS
+
+/** 指定页面的图标容量：第一页 16 个，第二页 24 个，后续页面 32 个 */
 internal fun homePageCapacity(page: Int): Int = when {
     page <= 0 -> HOME_PAGE_CAPACITY
     page == 1 -> SECOND_PAGE_CAPACITY
@@ -120,7 +147,7 @@ private const val SHORTCUT_HINT =
         "· 拖到另一个图标上：合并为分组\n" +
         "· 拖到空白格子：调整位置（关闭自动补位后可保留空位）\n" +
         "· 点击分组标题：重命名分组；分组内拖到空格可排序\n" +
-        "· 第一、二页各 12 个图标，第三页起每页 32 个，页面放满后新图标自动进入下一页"
+        "· 第一页 16 个、第二页 24 个、第三页起每页 32 个图标，页面放满后新图标自动进入下一页"
 
 /** 首页：支持 2~99 页，第 1 页常驻主页，第 2 页本地网页模块，其余为快捷入口页 */
 @Composable
@@ -203,6 +230,15 @@ fun HomePage(
     }
 
     Box(Modifier.fillMaxSize()) {
+        val wallpaperUri = app.settings.homeWallpaper
+        if (!wallpaperUri.isNullOrBlank()) {
+            HomeWallpaper(wallpaperUri)
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background.copy(alpha = 0.35f))
+            )
+        }
         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
             val pageItems = itemsByPage[page]
             val openItem: (HomeItem) -> Unit = { item ->
@@ -591,9 +627,22 @@ private fun HomeMainPage(
     onMoveToSlot: (HomeItem, Int) -> Unit
 ) {
     var query by remember { mutableStateOf("") }
+    val focusManager = LocalFocusManager.current
+    // 始终保留整页容量对应的「预备格」，标题位置只由容量决定，不随图标数量上下浮动
+    val shortcutCells = remember(items, autoCompact) {
+        buildHomeCells(items, autoCompact, HOME_PAGE_CAPACITY)
+    }
+    val shortcutRows = gridRows(HOME_PAGE_CAPACITY)
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    val bottomSpacer = (screenHeight - BOTTOM_BAR_HEIGHT - MAIN_PAGE_FIXED_HEIGHT -
+        HOME_ROW_HEIGHT * shortcutRows).coerceAtLeast(0.dp)
 
     LazyColumn(
-        Modifier.fillMaxSize(),
+        Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = { focusManager.clearFocus() })
+            },
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 18.dp)
     ) {
         item {
@@ -707,6 +756,10 @@ private fun HomeMainPage(
             Spacer(Modifier.height(26.dp))
         }
 
+        if (items.isNotEmpty()) {
+            item { Spacer(Modifier.height(bottomSpacer)) }
+        }
+
         item {
             ShortcutHeader(pageLabel = null, onShowHint = onShowHint, onOpenBookmarks = {
                 onOpenOverlay(OverlayPage.BOOKMARKS)
@@ -725,7 +778,7 @@ private fun HomeMainPage(
         } else {
             item {
                 HomeShortcutGrid(
-                    cells = buildHomeCells(items, autoCompact, HOME_PAGE_CAPACITY),
+                    cells = shortcutCells,
                     columns = HOME_COLUMNS,
                     allItems = allItems,
                     onOpen = onOpenItem,
@@ -755,6 +808,13 @@ private fun HomeSecondPage(
     val context = LocalContext.current
     val app = context.applicationContext as App
     val scope = rememberCoroutineScope()
+    val shortcutCells = remember(items, autoCompact) {
+        buildHomeCells(items, autoCompact, homePageCapacity(1))
+    }
+    val shortcutRows = gridRows(homePageCapacity(1))
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    val bottomSpacer = (screenHeight - BOTTOM_BAR_HEIGHT - SECOND_PAGE_FIXED_HEIGHT -
+        HOME_ROW_HEIGHT * shortcutRows).coerceAtLeast(0.dp)
 
     val openFileLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -864,6 +924,10 @@ private fun HomeSecondPage(
             Spacer(Modifier.height(22.dp))
         }
 
+        if (items.isNotEmpty()) {
+            item { Spacer(Modifier.height(bottomSpacer)) }
+        }
+
         item {
             ShortcutHeader(pageLabel = "第 2 页", onShowHint = onShowHint)
         }
@@ -880,7 +944,7 @@ private fun HomeSecondPage(
         } else {
             item {
                 HomeShortcutGrid(
-                    cells = buildHomeCells(items, autoCompact, homePageCapacity(1)),
+                    cells = shortcutCells,
                     columns = HOME_COLUMNS,
                     allItems = allItems,
                     onOpen = onOpenItem,
@@ -906,10 +970,21 @@ private fun HomeExtraPage(
     onMerge: (HomeItem, HomeItem) -> Unit,
     onMoveToSlot: (HomeItem, Int) -> Unit
 ) {
+    val shortcutCells = remember(items, autoCompact) {
+        buildHomeCells(items, autoCompact, homePageCapacity(pageIndex))
+    }
+    val shortcutRows = gridRows(homePageCapacity(pageIndex))
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    val bottomSpacer = (screenHeight - BOTTOM_BAR_HEIGHT - EXTRA_PAGE_FIXED_HEIGHT -
+        HOME_ROW_HEIGHT * shortcutRows).coerceAtLeast(0.dp)
+
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 18.dp)
     ) {
+        if (items.isNotEmpty()) {
+            item { Spacer(Modifier.height(bottomSpacer)) }
+        }
         item {
             ShortcutHeader(pageLabel = pageName(pageIndex), onShowHint = onShowHint)
             Spacer(Modifier.height(14.dp))
@@ -926,7 +1001,7 @@ private fun HomeExtraPage(
         } else {
             item {
                 HomeShortcutGrid(
-                    cells = buildHomeCells(items, autoCompact, homePageCapacity(pageIndex)),
+                    cells = shortcutCells,
                     columns = HOME_COLUMNS,
                     allItems = allItems,
                     onOpen = onOpenItem,
@@ -1374,3 +1449,35 @@ private fun queryDisplayName(context: Context, uri: Uri): String? {
 private fun toast(context: Context, message: String) {
     Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
 }
+
+@Composable
+private fun HomeWallpaper(uriText: String) {
+    val context = LocalContext.current
+    val bitmap by produceState<android.graphics.Bitmap?>(initialValue = null, uriText) {
+        value = withContext(Dispatchers.IO) {
+            decodeSampledBitmap(context, Uri.parse(uriText))
+        }
+    }
+    bitmap?.let {
+        Image(
+            bitmap = it.asImageBitmap(),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
+    }
+}
+
+private fun decodeSampledBitmap(context: Context, uri: Uri): android.graphics.Bitmap? = runCatching {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    context.contentResolver.openInputStream(uri)?.use {
+        BitmapFactory.decodeStream(it, null, bounds)
+    }
+    val width = bounds.outWidth.coerceAtLeast(1)
+    var sample = 1
+    while (width / sample > 1440) sample *= 2
+    val options = BitmapFactory.Options().apply { inSampleSize = sample }
+    context.contentResolver.openInputStream(uri)?.use {
+        BitmapFactory.decodeStream(it, null, options)
+    }
+}.getOrNull()

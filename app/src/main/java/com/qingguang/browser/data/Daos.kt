@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface BookmarkDao {
-    @Query("SELECT * FROM bookmarks ORDER BY createdAt DESC")
+    @Query("SELECT * FROM bookmarks ORDER BY CASE WHEN sortOrder = 0 THEN 1 ELSE 0 END, sortOrder ASC, createdAt DESC")
     fun observeAll(): Flow<List<Bookmark>>
 
     @Insert
@@ -21,6 +21,9 @@ interface BookmarkDao {
 
     @Query("UPDATE bookmarks SET folderId = :folderId WHERE id = :id")
     suspend fun moveToFolder(id: Long, folderId: Long)
+
+    @Query("UPDATE bookmarks SET sortOrder = :order WHERE id = :id")
+    suspend fun updateSortOrder(id: Long, order: Int)
 
     @Query("UPDATE bookmarks SET title = :title, url = :url, folderId = :folderId WHERE id = :id")
     suspend fun update(id: Long, title: String, url: String, folderId: Long)
@@ -166,8 +169,17 @@ interface DownloadDao {
     fun observeAll(): Flow<List<DownloadRecord>>
 
     @Insert
-    suspend fun insert(record: DownloadRecord)
+    suspend fun insert(record: DownloadRecord): Long
 
     @Query("DELETE FROM downloads WHERE id = :id")
     suspend fun delete(id: Long)
+
+    @Query("UPDATE downloads SET status = :status WHERE id = :id")
+    suspend fun updateStatus(id: Long, status: String)
+
+    @Query("UPDATE downloads SET status = :status, localUri = :localUri WHERE id = :id")
+    suspend fun updateStatusAndUri(id: Long, status: String, localUri: String?)
+
+    @Query("SELECT * FROM downloads ORDER BY createdAt DESC LIMIT 200")
+    suspend fun all(): List<DownloadRecord>
 }

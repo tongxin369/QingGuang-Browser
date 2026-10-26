@@ -87,6 +87,46 @@ class SettingsStore(context: Context) {
         get() = prefs.getInt(KEY_MENU_ROWS, 3)
         set(value) = prefs.edit().putInt(KEY_MENU_ROWS, value).apply()
 
+    /** 下载文件在「下载」目录下的子目录；空字符串表示直接放在下载根目录 */
+    var downloadSubDir: String
+        get() = prefs.getString(KEY_DOWNLOAD_SUB_DIR, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_DOWNLOAD_SUB_DIR, value.trim().trim('/')).apply()
+
+    /** 标签面板是否显示搜索框 */
+    var showTabSearch: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_TAB_SEARCH, true)
+        set(value) = prefs.edit().putBoolean(KEY_SHOW_TAB_SEARCH, value).apply()
+
+    /** 标签面板是否显示「恢复刚关闭的标签页」入口 */
+    var showTabRestore: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_TAB_RESTORE, true)
+        set(value) = prefs.edit().putBoolean(KEY_SHOW_TAB_RESTORE, value).apply()
+
+    /** 下拉刷新 */
+    var pullRefresh: Boolean
+        get() = prefs.getBoolean(KEY_PULL_REFRESH, true)
+        set(value) = prefs.edit().putBoolean(KEY_PULL_REFRESH, value).apply()
+
+    /** 左右边缘侧滑前进 / 后退 */
+    var swipeNavigation: Boolean
+        get() = prefs.getBoolean(KEY_SWIPE_NAV, false)
+        set(value) = prefs.edit().putBoolean(KEY_SWIPE_NAV, value).apply()
+
+    /** 广告与弹窗拦截 */
+    var adBlock: Boolean
+        get() = prefs.getBoolean(KEY_AD_BLOCK, false)
+        set(value) = prefs.edit().putBoolean(KEY_AD_BLOCK, value).apply()
+
+    /** 无痕模式：不记录历史、不参与自动备份 */
+    var incognito: Boolean
+        get() = prefs.getBoolean(KEY_INCOGNITO, false)
+        set(value) = prefs.edit().putBoolean(KEY_INCOGNITO, value).apply()
+
+    /** 主页壁纸（content uri）；空表示使用纯色背景 */
+    var homeWallpaper: String?
+        get() = prefs.getString(KEY_HOME_WALLPAPER, null)
+        set(value) = prefs.edit().putString(KEY_HOME_WALLPAPER, value).apply()
+
     companion object {
         private const val KEY_SEARCH_ENGINE = "search_engine"
         private const val KEY_AUTO_BACKUP = "auto_backup"
@@ -104,6 +144,14 @@ class SettingsStore(context: Context) {
         private const val KEY_BACKUP_TREE_URI = "backup_tree_uri"
         private const val KEY_MENU_ORDER = "menu_order"
         private const val KEY_MENU_ROWS = "menu_rows"
+        private const val KEY_DOWNLOAD_SUB_DIR = "download_sub_dir"
+        private const val KEY_SHOW_TAB_SEARCH = "show_tab_search"
+        private const val KEY_SHOW_TAB_RESTORE = "show_tab_restore"
+        private const val KEY_PULL_REFRESH = "pull_refresh"
+        private const val KEY_SWIPE_NAV = "swipe_nav"
+        private const val KEY_AD_BLOCK = "ad_block"
+        private const val KEY_INCOGNITO = "incognito"
+        private const val KEY_HOME_WALLPAPER = "home_wallpaper"
 
         const val DEFAULT_SEARCH_ENGINE = "https://www.bing.com/search?q=%s"
         const val DESKTOP_UA =

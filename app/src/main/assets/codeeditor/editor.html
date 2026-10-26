@@ -17,6 +17,15 @@
   .CodeMirror-gutters { border-right: 1px solid rgba(128, 128, 128, 0.22); }
   .CodeMirror-linenumber { padding: 0 6px 0 6px; }
   .CodeMirror-scroll { -webkit-overflow-scrolling: touch; }
+  /* 尽量让系统滚动条可见；右侧还有应用内绘制的快速滑动轨道 */
+  .CodeMirror-vscrollbar { width: 10px !important; }
+  .CodeMirror-vscrollbar::-webkit-scrollbar { width: 8px; }
+  .CodeMirror-vscrollbar::-webkit-scrollbar-thumb {
+    background: rgba(128, 128, 128, 0.55);
+    border-radius: 4px;
+  }
+  .CodeMirror-vscrollbar::-webkit-scrollbar-track { background: rgba(128, 128, 128, 0.14); }
+  body.dark .CodeMirror-vscrollbar::-webkit-scrollbar-thumb { background: rgba(200, 200, 200, 0.55); }
 </style>
 </head>
 <body>
@@ -37,7 +46,8 @@
     readOnly: false,
     theme: 'default',
     scrollbarStyle: 'native',
-    viewportMargin: 20
+    // 预渲染更多行，避免首次滚动到未浏览区域时因懒渲染而卡顿
+    viewportMargin: 600
   });
 
   function notifyDirty() {
@@ -46,6 +56,53 @@
     }
   }
   editor.on('change', notifyDirty);
+
+  function reportScroll() {
+    try {
+      var info = editor.getScrollInfo();
+      if (window.QingGuangEditor && QingGuangEditor.onScroll) {
+        QingGuangEditor.onScroll(info.top, info.height, info.clientHeight);
+      }
+    } catch (e) {}
+  }
+  editor.on('scroll', reportScroll);
+  editor.on('refresh', reportScroll);
+  window.addEventListener('resize', function () {
+    setTimeout(reportScroll, 60);
+  });
+
+  window.scrollToRatio = function (ratio) {
+    var info = editor.getScrollInfo();
+    var max = Math.max(0, info.height - info.clientHeight);
+    var safe = Math.max(0, Math.min(1, ratio || 0));
+    editor.scrollTo(null, max * safe);
+    reportScroll();
+  };
+
+  // 简化的页内查找：不依赖 search 插件，返回匹配总数
+  window.findNext = function (query, reset) {
+    if (!query) return 0;
+    var all = editor.getValue();
+    var from = reset ? 0 : (window.__findIndex || 0);
+    var idx = all.indexOf(query, from);
+    if (idx < 0 && from > 0) idx = all.indexOf(query, 0);
+    if (idx < 0) {
+      window.__findIndex = 0;
+      return 0;
+    }
+    window.__findIndex = idx + query.length;
+    var fromPos = editor.posFromIndex(idx);
+    var toPos = editor.posFromIndex(idx + query.length);
+    editor.setSelection(fromPos, toPos);
+    editor.scrollIntoView({ from: fromPos, to: toPos }, 80);
+    var count = 0;
+    var pos = 0;
+    while ((pos = all.indexOf(query, pos)) >= 0) {
+      count++;
+      pos += query.length;
+    }
+    return count;
+  };
 
   window.setEditor = function (text, mode, readOnly, dark) {
     editor.setOption('mode', mode || 'htmlmixed');
@@ -56,7 +113,10 @@
     editor.clearHistory();
     editor.markClean();
     notifyDirty();
-    setTimeout(function () { editor.refresh(); }, 40);
+    setTimeout(function () {
+      editor.refresh();
+      reportScroll();
+    }, 40);
   };
 
   window.getCode = function () {
@@ -72,6 +132,7 @@
     editor.setOption('theme', dark ? 'material-darker' : 'default');
     document.body.className = dark ? 'dark' : '';
     editor.refresh();
+    reportScroll();
   };
 
   window.gotoLine = function (line) {

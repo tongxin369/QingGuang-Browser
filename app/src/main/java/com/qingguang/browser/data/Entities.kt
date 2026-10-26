@@ -19,6 +19,8 @@ data class Bookmark(
     val url: String,
     val folderId: Long = 0,
     val createdAt: Long = System.currentTimeMillis(),
+    /** 手动拖动排序序号；0 表示尚未排序（按创建时间倒序） */
+    val sortOrder: Int = 0,
     /** 自定义图标颜色（ARGB）；null 表示按标题自动配色 */
     val iconColor: Int? = null,
     /** 自定义图标文字（1-2 字）；null 表示自动取标题首字 */
@@ -71,5 +73,12 @@ data class DownloadRecord(
     val url: String,
     val localPath: String?,
     val status: String,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    /** 系统下载管理器任务 id；-1 表示非下载管理器任务（data / blob） */
+    val managerId: Long = -1,
+    /** 文件总大小（字节）；-1 表示未知 */
+    val totalBytes: Long = -1,
+    val mimeType: String = "",
+    /** 应用自己写盘后的 content:// 地址，用于打开文件 */
+    val localUri: String? = null
 )

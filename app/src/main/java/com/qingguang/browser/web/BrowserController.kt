@@ -12,6 +12,7 @@ import android.os.Environment
 import android.print.PrintAttributes
 import android.print.PrintManager
 import android.provider.MediaStore
+import android.media.AudioAttributes
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Base64
@@ -59,13 +60,38 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 
-class BrowserTab(val id: String, val webView: WebView)
+class BrowserTab(val id: String, val webView: WebView) {
+    var locked by mutableStateOf(false)
+}
+
+/** 长按命中结果，用于网页元素菜单 */
+data class LongPressTarget(
+    val pageUrl: String = "",
+    val linkUrl: String = "",
+    val imageUrl: String = "",
+    val text: String = ""
+) {
+    val hasLink: Boolean get() = linkUrl.isNotBlank()
+    val hasImage: Boolean get() = imageUrl.isNotBlank()
+}
+
+/** 支持长按命中检测的 WebView；普通文本长按仍走系统选择 */
+private class HitTestWebView(context: Context) : WebView(context) {
+    var onHitTestLongPress: ((WebView.HitTestResult) -> Boolean)? = null
+
+    override fun performLongClick(): Boolean {
+        val result = hitTestResult
+        if (onHitTestLongPress?.invoke(result) == true) return true
+        return super.performLongClick()
+    }
+}
 
 data class TabSummary(
     val id: String,
     val title: String,
     val url: String,
-    val isActive: Boolean
+    val isActive: Boolean,
+    val locked: Boolean = false
 )
 
 /** 等待用户确认的下载请求 */
@@ -101,8 +127,11 @@ class BrowserController(private val activity: Activity) {
         .build()
 
     private val tabs = mutableListOf<BrowserTab>()
+    private val closedTabs = ArrayDeque<Pair<String, String>>()
     private var activeIndex = -1
     private var container: FrameLayout? = null
+    var canRestoreTab by mutableStateOf(false)
+        private set
 
     var currentUrl by mutableStateOf("")
         private set
@@ -127,6 +156,17 @@ class BrowserController(private val activity: Activity) {
 
     /** 待确认的下载（弹出确认框，确认后才真正下载） */
     var pendingDownload by mutableStateOf<PendingDownload?>(null)
+
+    /** 网页长按元素菜单 */
+    var longPressTarget by mutableStateOf<LongPressTarget?>(null)
+
+    /** 是否处于阅读模式（页面已被重排，退出时刷新恢复） */
+    var readerMode by mutableStateOf(false)
+        private set
+
+    var findQuery by mutableStateOf("")
+    var findMatches by mutableStateOf(0)
+    var findOrdinal by mutableStateOf(0)
         private set
 
     /** 顶/底栏是否跟随网页主题色 */
@@ -148,6 +188,8 @@ class BrowserController(private val activity: Activity) {
         private set
 
     private var tts: TextToSpeech? = null
+    private var ttsReady = false
+    private var pendingReadText: String? = null
     private var ttsLastUtterance: String? = null
 
     // ---------------- 容器与标签 ----------------
@@ -178,7 +220,19 @@ class BrowserController(private val activity: Activity) {
     fun closeTab(id: String) {
         val index = tabs.indexOfFirst { it.id == id }
         if (index < 0) return
-        val tab = tabs.removeAt(index)
+        val tab = tabs[index]
+        if (tab.locked) {
+            toast("标签已锁定，解锁后再关闭")
+            return
+        }
+        val url = tab.webView.url
+        val title = tab.webView.title
+        if (!url.isNullOrBlank()) {
+            closedTabs.addLast(url to (title ?: url))
+            while (closedTabs.size > 20) closedTabs.removeFirst()
+        }
+        canRestoreTab = closedTabs.isNotEmpty()
+        tabs.removeAt(index)
         container?.removeView(tab.webView)
         tab.webView.stopLoading()
         tab.webView.destroy()
@@ -190,6 +244,27 @@ class BrowserController(private val activity: Activity) {
         if (tabs.isEmpty()) showHome = true
         renderContainer()
         refresh()
+    }
+
+    /** 恢复最近关闭的标签页 */
+    fun restoreClosedTab() {
+        val entry = closedTabs.removeLastOrNull()
+        if (entry == null) {
+            toast("没有可恢复的标签页")
+            return
+        }
+        canRestoreTab = closedTabs.isNotEmpty()
+        val tab = newTabInternal()
+        showHome = false
+        tab.webView.loadUrl(entry.first)
+        refresh()
+    }
+
+    fun toggleTabLock(id: String) {
+        val tab = tabs.firstOrNull { it.id == id } ?: return
+        tab.locked = !tab.locked
+        refresh()
+        toast(if (tab.locked) "已锁定标签页" else "已解锁标签页")
     }
 
     fun switchTab(id: String) {
@@ -252,6 +327,20 @@ class BrowserController(private val activity: Activity) {
         refresh()
     }
 
+    /** 新标签页打开（长按菜单、链接菜单共用） */
+    fun openInNewTab(url: String) {
+        if (url.isBlank()) return
+        longPressTarget = null
+        newTabInternal()
+        showHome = false
+        currentTab()?.webView?.loadUrl(url)
+        refresh()
+    }
+
+    fun dismissLongPress() {
+        longPressTarget = null
+    }
+
     fun reload() {
         currentTab()?.webView?.let {
             if (it.url.isNullOrEmpty()) it.reload() else it.reload()
@@ -305,7 +394,26 @@ class BrowserController(private val activity: Activity) {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun createWebView(): WebView {
-        val webView = WebView(activity)
+        val webView = HitTestWebView(activity)
+        webView.onHitTestLongPress = { result ->
+            val pageUrl = result.extra ?: ""
+            when (result.type) {
+                WebView.HitTestResult.IMAGE_TYPE,
+                WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE -> {
+                    longPressTarget = LongPressTarget(imageUrl = pageUrl)
+                    true
+                }
+                WebView.HitTestResult.SRC_ANCHOR_TYPE -> {
+                    longPressTarget = LongPressTarget(linkUrl = pageUrl)
+                    true
+                }
+                WebView.HitTestResult.IMAGE_ANCHOR_TYPE -> {
+                    longPressTarget = LongPressTarget(linkUrl = pageUrl)
+                    true
+                }
+                else -> false
+            }
+        }
         val settings = webView.settings
         settings.apply {
             javaScriptEnabled = true
@@ -326,6 +434,12 @@ class BrowserController(private val activity: Activity) {
             userAgentString = if (app.settings.desktopMode) SettingsStore.DESKTOP_UA else defaultUserAgent
         }
         applyDarkMode(webView)
+        webView.setFindListener { ordinal, matches, _ ->
+            if (webView === currentTab()?.webView) {
+                findMatches = matches
+                findOrdinal = if (matches > 0) ordinal else 0
+            }
+        }
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
 
@@ -333,7 +447,16 @@ class BrowserController(private val activity: Activity) {
             override fun shouldInterceptRequest(
                 view: WebView,
                 request: WebResourceRequest
-            ): WebResourceResponse? = assetLoader.shouldInterceptRequest(request.url)
+            ): WebResourceResponse? {
+                if (app.settings.adBlock && isAdHost(request.url.host ?: "")) {
+                    return WebResourceResponse(
+                        "text/plain",
+                        "utf-8",
+                        java.io.ByteArrayInputStream(ByteArray(0))
+                    )
+                }
+                return assetLoader.shouldInterceptRequest(request.url)
+            }
 
             override fun shouldOverrideUrlLoading(
                 view: WebView,
@@ -352,6 +475,10 @@ class BrowserController(private val activity: Activity) {
                 showHome = false
                 progress = 0.02f
                 pageThemeColor = null
+                readerMode = false
+                longPressTarget = null
+                // 提前接管 URL.createObjectURL，缓存网页生成的 Blob，避免导出下载时 fetch 被 CSP 拦截
+                view.evaluateJavascript(BLOB_STORE_JS, null)
                 refresh()
             }
 
@@ -363,8 +490,15 @@ class BrowserController(private val activity: Activity) {
                     updatePageTheme(view)
                     // Android WebView 不实现 File System Access API，注入兼容实现，网页可多选文件
                     view.evaluateJavascript(PICKER_POLYFILL_JS, null)
+                    // 手势与广告元素隐藏
+                    gestureScript()?.let { view.evaluateJavascript(it, null) }
+                    if (app.settings.adBlock) {
+                        view.evaluateJavascript(AD_HIDE_JS, null)
+                    }
                     // 页面加载完成后自动备份一次，降低"交互后直接退出"导致的数据丢失风险
-                    if (app.settings.autoBackup && url != null && !url.startsWith("about:")) {
+                    if (app.settings.autoBackup && !app.settings.incognito &&
+                        url != null && !url.startsWith("about:")
+                    ) {
                         app.backups.backupSite(view, url, view.title ?: url) { _, _ -> }
                     }
                 }
@@ -379,6 +513,19 @@ class BrowserController(private val activity: Activity) {
 
             override fun onReceivedTitle(view: WebView, title: String?) {
                 if (view === currentTab()?.webView) refresh()
+            }
+
+            override fun onCreateWindow(
+                view: WebView,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: android.os.Message
+            ): Boolean {
+                if (app.settings.adBlock) {
+                    toast("已拦截网页弹窗")
+                    return false
+                }
+                return super.onCreateWindow(view, isDialog, isUserGesture, resultMsg)
             }
 
             override fun onGeolocationPermissionsShowPrompt(
@@ -408,6 +555,7 @@ class BrowserController(private val activity: Activity) {
             requestDownload(url, userAgent, contentDisposition, mimetype)
         })
         webView.addJavascriptInterface(BlobDownloadBridge(), "QingGuangDownload")
+        webView.addJavascriptInterface(GestureBridge(), "QingGuangGestures")
 
         return webView
     }
@@ -467,6 +615,105 @@ class BrowserController(private val activity: Activity) {
             applyDarkMode(tab.webView)
         }
         currentTab()?.webView?.reload()
+    }
+
+    // ---------------- 下载 ----------------
+
+    /** 阅读模式：提取正文并重排页面；再次调用则刷新退出 */
+    fun toggleReaderMode() {
+        val webView = currentTab()?.webView ?: return
+        if (readerMode) {
+            readerMode = false
+            webView.reload()
+            toast("已退出阅读模式")
+            return
+        }
+        webView.evaluateJavascript(READER_JS) { result ->
+            if (result == "true") {
+                readerMode = true
+                toast("已进入阅读模式，可在菜单中退出")
+            } else {
+                toast("这个页面没有可提取的正文")
+            }
+        }
+    }
+
+    /** 保存当前网页为离线 HTML（不含外部图片和样式文件） */
+    fun saveCurrentPageOffline() {
+        val title = currentTitle.ifBlank { "网页" }
+        val url = currentUrl
+        fetchPageSource { html ->
+            if (html.isBlank()) {
+                toast("无法获取网页内容")
+                return@fetchPageSource
+            }
+            val base = sanitizeDownloadName(title).ifBlank { "网页" }
+            val fileName = if (base.endsWith(".html", true)) base else "$base.html"
+            saveDownloadedBytes(fileName, "text/html", html.toByteArray(Charsets.UTF_8), url)
+        }
+    }
+
+    /** 批量保存当前网页里的图片（最多 60 张） */
+    fun downloadAllImages() {
+        val webView = currentTab()?.webView
+        if (webView == null) {
+            toast("当前没有打开的页面")
+            return
+        }
+        val js = "(function(){var seen={};var out=[];var imgs=document.images||[];" +
+            "for(var i=0;i<imgs.length;i++){var s=imgs[i].currentSrc||imgs[i].src;" +
+            "if(!s||s.indexOf('data:')===0)continue;if(seen[s])continue;seen[s]=1;" +
+            "out.push(s);if(out.length>=60)break;}return JSON.stringify(out);})()"
+        webView.evaluateJavascript(js) { raw ->
+            val text = runCatching { JSONTokener(raw).nextValue() as? String }.getOrNull()
+            val array = runCatching { org.json.JSONArray(text ?: "[]") }.getOrNull()
+            val urls = mutableListOf<String>()
+            if (array != null) {
+                for (i in 0 until array.length()) {
+                    val item = array.optString(i)
+                    if (item.isNotBlank()) urls.add(item)
+                }
+            }
+            if (urls.isEmpty()) {
+                toast("本页没有可下载的图片")
+                return@evaluateJavascript
+            }
+            activity.runOnUiThread {
+                urls.forEachIndexed { index, url -> saveImageFromUrl(url, imageName(url, index)) }
+                toast("已开始保存 ${urls.size} 张图片")
+            }
+        }
+    }
+
+    private fun imageName(url: String, index: Int): String {
+        val raw = url.substringBefore('?').substringAfterLast('/').substringBefore('#')
+        val decoded = runCatching {
+            java.net.URLDecoder.decode(raw, "UTF-8")
+        }.getOrDefault(raw)
+        return if (decoded.contains('.')) "${index + 1}-$decoded" else "图片-${index + 1}.jpg"
+    }
+
+    private fun gestureScript(): String? {
+        if (!app.settings.pullRefresh && !app.settings.swipeNavigation) return null
+        val pull = app.settings.pullRefresh
+        val swipe = app.settings.swipeNavigation
+        return "(function(){if(window.__qgGesture)return;window.__qgGesture=true;var sx=0,sy=0;" +
+            "document.addEventListener('touchstart',function(e){" +
+            "if(e.touches.length!==1)return;sx=e.touches[0].clientX;sy=e.touches[0].clientY;},{passive:true});" +
+            "document.addEventListener('touchend',function(e){" +
+            "if(e.changedTouches.length!==1)return;" +
+            "var x=e.changedTouches[0].clientX,y=e.changedTouches[0].clientY,dx=x-sx,dy=y-sy;" +
+            (if (swipe) "if(Math.abs(dx)>100&&Math.abs(dy)<60){if(sx<40&&dx>0)QingGuangGestures.navigate(-1);" +
+                "else if(sx>window.innerWidth-40&&dx<0)QingGuangGestures.navigate(1);}" else "") +
+            (if (pull) "if(window.scrollY<=2&&dy>130&&Math.abs(dx)<80)QingGuangGestures.reload();" else "") +
+            "},{passive:true});})()"
+    }
+
+    private fun isAdHost(host: String): Boolean {
+        if (host.isBlank()) return false
+        val h = host.lowercase()
+        if (AD_HOSTS.any { h == it || h.endsWith(".$it") }) return true
+        return h.startsWith("ads.") || h.startsWith("ad.") || h.contains("adserver")
     }
 
     // ---------------- 下载 ----------------
@@ -535,11 +782,13 @@ class BrowserController(private val activity: Activity) {
 
     private fun enqueueDownload(pending: PendingDownload, fileName: String) {
         runCatching {
+            val subDir = app.settings.downloadSubDir
+            val relativePath = if (subDir.isBlank()) fileName else "$subDir/$fileName"
             val request = DownloadManager.Request(Uri.parse(pending.url))
                 .setMimeType(pending.mimeType)
                 .setTitle(fileName)
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+                .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, relativePath)
             if (pending.userAgent.isNotBlank()) {
                 request.addRequestHeader("User-Agent", pending.userAgent)
             }
@@ -549,13 +798,48 @@ class BrowserController(private val activity: Activity) {
                     DownloadRecord(
                         fileName = fileName,
                         url = pending.url,
-                        localPath = "系统下载管理 #$id",
-                        status = "已提交下载"
+                        localPath = "${Environment.DIRECTORY_DOWNLOADS}/$relativePath",
+                        status = "等待下载",
+                        managerId = id,
+                        totalBytes = pending.sizeBytes ?: -1L,
+                        mimeType = pending.mimeType
                     )
                 )
             }
             toast("已加入下载：$fileName")
         }.onFailure { toast("下载失败：${it.message}") }
+    }
+
+    /** 下载中心「重试」：按原地址重新加入下载任务 */
+    fun retryDownload(url: String, fileName: String, mimeType: String) {
+        if (url.isBlank() || url.startsWith("data:") || url.startsWith("blob:")) {
+            toast("该下载无法自动重试，请回到网页重新下载")
+            return
+        }
+        enqueueDownload(
+            PendingDownload(
+                url = url,
+                userAgent = defaultUserAgent,
+                contentDisposition = "",
+                mimeType = mimeType,
+                suggestedName = fileName,
+                sizeChecked = true
+            ),
+            fileName
+        )
+    }
+
+    /** 长按图片：保存图片（使用网页 Cookie 抓取，避免防盗链失败） */
+    fun saveImageFromUrl(url: String, suggestedName: String) {
+        if (url.isBlank()) {
+            toast("图片地址无效")
+            return
+        }
+        val name = sanitizeDownloadName(suggestedName).ifBlank { fallbackFileName("", "image/*") }
+        val mime = MimeTypeMap.getSingleton()
+            .getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase())
+            ?: "image/*"
+        downloadBlobOrData(url, "", mime, name)
     }
 
     private fun sanitizeDownloadName(name: String): String =
@@ -603,7 +887,8 @@ class BrowserController(private val activity: Activity) {
         val safeMime = mimetype.replace("\\", "\\\\").replace("'", "\\'")
         val js = """
             (function(){
-              fetch('$safeUrl').then(function(r){return r.blob();}).then(function(b){
+              var cached = window.__qgBlobStore ? window.__qgBlobStore['$safeUrl'] : null;
+              function deliver(b) {
                 var fr = new FileReader();
                 fr.onload = function(){
                   var s = fr.result;
@@ -612,7 +897,17 @@ class BrowserController(private val activity: Activity) {
                 };
                 fr.onerror = function(){ QingGuangDownload.fail('读取数据失败'); };
                 fr.readAsDataURL(b);
-              }).catch(function(e){ QingGuangDownload.fail(e.message); });
+              }
+              if (cached) { deliver(cached); return; }
+              fetch('$safeUrl', { credentials: 'include' }).then(function(r){return r.blob();})
+                .then(deliver)
+                .catch(function(e){
+                  var msg = (e && e.message) ? e.message : 'Failed to fetch';
+                  if ('$safeUrl'.indexOf('blob:') === 0) {
+                    msg = '网页限制了脚本读取导出文件（' + msg + '），请尝试网页内的其他导出方式';
+                  }
+                  QingGuangDownload.fail(msg);
+                });
             })();
         """.trimIndent()
         webView.evaluateJavascript(js, null)
@@ -631,10 +926,16 @@ class BrowserController(private val activity: Activity) {
     private fun saveDownloadedBytes(fileName: String, mime: String, bytes: ByteArray, sourceUrl: String) {
         runCatching {
             val resolver = app.contentResolver
+            val subDir = app.settings.downloadSubDir
+            val relativePath = if (subDir.isBlank()) {
+                Environment.DIRECTORY_DOWNLOADS
+            } else {
+                "${Environment.DIRECTORY_DOWNLOADS}/$subDir"
+            }
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, fileName)
                 put(MediaStore.Downloads.MIME_TYPE, mime.ifBlank { "application/octet-stream" })
-                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.Downloads.RELATIVE_PATH, relativePath)
                 put(MediaStore.Downloads.IS_PENDING, 1)
             }
             val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
@@ -648,14 +949,34 @@ class BrowserController(private val activity: Activity) {
                     DownloadRecord(
                         fileName = fileName,
                         url = sourceUrl,
-                        localPath = "${Environment.DIRECTORY_DOWNLOADS}/$fileName",
-                        status = "下载完成"
+                        localPath = "$relativePath/$fileName",
+                        status = "下载完成",
+                        totalBytes = bytes.size.toLong(),
+                        mimeType = mime,
+                        localUri = uri.toString()
                     )
                 )
             }
             DownloadNotifier.notifyComplete(app, fileName)
             toast("下载完成：$fileName")
         }.onFailure { toast("下载失败：${it.message}") }
+    }
+
+    /** 供网页 JS 调用的手势桥接 */
+    inner class GestureBridge {
+        @JavascriptInterface
+        fun navigate(delta: Int) {
+            activity.runOnUiThread {
+                if (delta < 0) goBack() else goForward()
+            }
+        }
+
+        @JavascriptInterface
+        fun reload() {
+            activity.runOnUiThread {
+                currentTab()?.webView?.reload()
+            }
+        }
     }
 
     /** 供网页 JS 调用的 blob 下载桥接 */
@@ -679,6 +1000,7 @@ class BrowserController(private val activity: Activity) {
     // ---------------- 历史与备份 ----------------
 
     private fun recordHistory(webView: WebView) {
+        if (app.settings.incognito) return
         val url = webView.url ?: return
         if (url.startsWith("about:") || url.startsWith("data:")) return
         val title = webView.title?.takeIf { it.isNotBlank() } ?: url
@@ -776,44 +1098,127 @@ class BrowserController(private val activity: Activity) {
                 toast("当前页面没有可朗读的文字")
                 return@evaluateJavascript
             }
-            ensureTts()
-            val engine = tts ?: return@evaluateJavascript
-            val chunks = splitForTts(pageText)
-            if (chunks.isEmpty()) return@evaluateJavascript
-            engine.stop()
-            engine.setLanguage(Locale.getDefault())
-            ttsLastUtterance = "qingguang-${chunks.size - 1}"
-            chunks.forEachIndexed { index, chunk ->
-                val params = Bundle().apply {
-                    putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "qingguang-$index")
-                }
-                engine.speak(
-                    chunk,
-                    if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD,
-                    params,
-                    "qingguang-$index"
-                )
+            if (ttsReady) {
+                speakChunks(splitForTts(pageText))
+            } else {
+                // 语音引擎初始化是异步的，先缓存文本，等 onInit 成功后再朗读
+                pendingReadText = pageText
+                ensureTts()
             }
-            isSpeaking = true
         }
     }
 
     fun stopReadAloud() {
+        pendingReadText = null
         tts?.stop()
         isSpeaking = false
     }
 
+    // ---------------- 页内查找 ----------------
+
+    fun startFind(text: String) {
+        findQuery = text
+        val view = currentTab()?.webView ?: return
+        if (text.isBlank()) {
+            view.clearMatches()
+            findMatches = 0
+            findOrdinal = 0
+            return
+        }
+        view.findAllAsync(text)
+    }
+
+    fun findNext(forward: Boolean = true) {
+        currentTab()?.webView?.findNext(forward)
+    }
+
+    fun stopFind() {
+        currentTab()?.webView?.clearMatches()
+        findQuery = ""
+        findMatches = 0
+        findOrdinal = 0
+    }
+
+    private fun speakChunks(chunks: List<String>) {
+        if (chunks.isEmpty()) return
+        val engine = tts ?: return
+        engine.stop()
+        val langStatus = engine.setLanguage(Locale.getDefault())
+        if (langStatus == TextToSpeech.LANG_MISSING_DATA ||
+            langStatus == TextToSpeech.LANG_NOT_SUPPORTED
+        ) {
+            isSpeaking = false
+            toast("语音引擎缺少中文语音数据，请在系统设置中下载语音包")
+            return
+        }
+        ttsLastUtterance = "qingguang-${chunks.size - 1}"
+        val first = chunks.firstOrNull() ?: return
+        val params = Bundle().apply {
+            putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "qingguang-0")
+        }
+        val started = engine.speak(
+            first,
+            TextToSpeech.QUEUE_FLUSH,
+            params,
+            "qingguang-0"
+        ) == TextToSpeech.SUCCESS
+        if (!started) {
+            isSpeaking = false
+            toast("朗读启动失败，请检查系统语音引擎")
+            return
+        }
+        chunks.drop(1).forEachIndexed { offset, chunk ->
+            val index = offset + 1
+            val queueParams = Bundle().apply {
+                putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "qingguang-$index")
+            }
+            engine.speak(chunk, TextToSpeech.QUEUE_ADD, queueParams, "qingguang-$index")
+        }
+    }
+
     private fun ensureTts() {
-        if (tts != null) return
+        if (tts != null) {
+            if (ttsReady) {
+                val pending = pendingReadText
+                pendingReadText = null
+                if (!pending.isNullOrBlank()) speakChunks(splitForTts(pending))
+            }
+            return
+        }
         tts = TextToSpeech(activity) { status ->
             if (status != TextToSpeech.SUCCESS) {
-                toast("系统语音引擎不可用")
+                ttsReady = false
                 tts = null
+                pendingReadText = null
+                isSpeaking = false
+                toast("系统语音引擎不可用，请在系统设置 → 无障碍 → 文字转语音中启用引擎")
                 return@TextToSpeech
             }
-            tts?.setLanguage(Locale.getDefault())
-            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) = Unit
+            val engine = tts ?: return@TextToSpeech
+            val langStatus = engine.setLanguage(Locale.getDefault())
+            if (langStatus == TextToSpeech.LANG_MISSING_DATA ||
+                langStatus == TextToSpeech.LANG_NOT_SUPPORTED
+            ) {
+                ttsReady = false
+                tts = null
+                pendingReadText = null
+                isSpeaking = false
+                toast("语音引擎缺少中文语音数据，请在系统设置中下载语音包")
+                return@TextToSpeech
+            }
+            runCatching {
+                engine.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+            }
+            ttsReady = true
+            engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {
+                    activity.runOnUiThread { isSpeaking = true }
+                }
 
                 override fun onDone(utteranceId: String?) {
                     if (utteranceId == ttsLastUtterance) {
@@ -823,9 +1228,17 @@ class BrowserController(private val activity: Activity) {
 
                 @Deprecated("Deprecated in Java")
                 override fun onError(utteranceId: String?) {
-                    activity.runOnUiThread { isSpeaking = false }
+                    activity.runOnUiThread {
+                        isSpeaking = false
+                        toast("朗读中断，请检查语音引擎")
+                    }
                 }
             })
+            val pending = pendingReadText
+            pendingReadText = null
+            if (!pending.isNullOrBlank()) {
+                activity.runOnUiThread { speakChunks(splitForTts(pending)) }
+            }
         }
     }
 
@@ -887,7 +1300,8 @@ class BrowserController(private val activity: Activity) {
                 id = it.id,
                 title = it.webView.title?.takeIf { t -> t.isNotBlank() } ?: "新标签页",
                 url = it.webView.url ?: "",
-                isActive = it === tab
+                isActive = it === tab,
+                locked = it.locked
             )
         }
     }
@@ -896,6 +1310,7 @@ class BrowserController(private val activity: Activity) {
         stopReadAloud()
         tts?.shutdown()
         tts = null
+        ttsReady = false
         container?.removeAllViews()
         tabs.forEach {
             it.webView.stopLoading()
@@ -936,5 +1351,65 @@ class BrowserController(private val activity: Activity) {
                 "input.addEventListener('change',function(){" +
                 "var handles=Array.prototype.map.call(input.files||[],function(f){return {kind:'file',name:f.name,getFile:function(){return Promise.resolve(f);}};});" +
                 "input.remove();resolve(handles);});input.click();});};})()"
+
+        /** 缓存网页通过 URL.createObjectURL 生成的 Blob；部分网站 CORS/CSP 会阻止再次 fetch(blob:) */
+        private const val BLOB_STORE_JS =
+            "(function(){if(window.__qgBlobHooked)return;window.__qgBlobHooked=true;" +
+                "window.__qgBlobStore=window.__qgBlobStore||{};" +
+                "try{var oc=URL.createObjectURL.bind(URL);" +
+                "URL.createObjectURL=function(o){var u=oc(o);try{window.__qgBlobStore[u]=o;}catch(e){}return u;};" +
+                "var orv=URL.revokeObjectURL.bind(URL);" +
+                "URL.revokeObjectURL=function(u){setTimeout(function(){" +
+                "try{orv(u);}catch(e){}try{delete window.__qgBlobStore[u];}catch(e){};},120000);};" +
+                "}catch(e){}})()"
+
+        /** 常见广告域名；开启拦截后直接返回空响应 */
+        private val AD_HOSTS = listOf(
+            "doubleclick.net",
+            "googlesyndication.com",
+            "googleadservices.com",
+            "adservice.google.com",
+            "amazon-adsystem.com",
+            "cpro.baidu.com",
+            "pos.baidu.com",
+            "tanx.com",
+            "mmstat.com",
+            "umeng.com",
+            "cnzz.com",
+            "adcolony.com",
+            "applovin.com",
+            "unityads.unity3d.com"
+        )
+
+        private const val AD_HIDE_JS =
+            "(function(){if(document.getElementById('qg-adblock'))return;" +
+                "var s=document.createElement('style');s.id='qg-adblock';" +
+                "s.textContent='ins.adsbygoogle,.adsbygoogle,[id^=\"google_ads\"],[id^=\"div-gpt-ad\"]," +
+                ".ad-banner,.ad-container,.ad-wrapper,[class*=\"advertisement\"]," +
+                "[id*=\"ad-banner\"],[class*=\"adsbygoogle\"]{display:none!important;}';" +
+                "(document.head||document.documentElement).appendChild(s);})()"
+
+        /** 阅读模式：挑选正文容器并重排，尽量保留图片 */
+        private const val READER_JS =
+            "(function(){" +
+                "if(window.__qgReader)return false;" +
+                "var cands=[].slice.call(document.querySelectorAll('article,main,[role=\"main\"]," +
+                ".article,.post,.content,#content,.markdown-body'));" +
+                "var best=null,score=0;" +
+                "cands.forEach(function(el){var t=el.innerText||'';if(t.length>score){score=t.length;best=el;}});" +
+                "if(!best||score<300)best=document.body;" +
+                "if(!best)return false;" +
+                "var dark=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches;" +
+                "var html=best.innerHTML,title=document.title;" +
+                "document.body.innerHTML='';" +
+                "document.body.style.cssText='margin:0;padding:0;background:'+(dark?'#121212':'#ffffff')+';';" +
+                "var holder=document.createElement('div');" +
+                "holder.style.cssText='max-width:760px;margin:0 auto;padding:28px 20px 60px;" +
+                "font-size:19px;line-height:1.9;font-family:Georgia,\"Noto Serif SC\",serif;color:'+(dark?'#e6e6e6':'#1b1b1b')+';';" +
+                "holder.innerHTML=html;" +
+                "holder.querySelectorAll('script,style,nav,footer,aside,form,iframe,button,video').forEach(" +
+                "function(n){try{n.remove();}catch(e){}});" +
+                "document.body.appendChild(holder);" +
+                "window.__qgReader=true;document.title=title;return true;})()"
     }
 }

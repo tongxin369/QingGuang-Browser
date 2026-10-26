@@ -41,11 +41,13 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -318,6 +320,14 @@ private fun BrowsingSettings(controller: BrowserController) {
     var zoom by remember { mutableStateOf(app.settings.textZoom) }
     var desktop by remember { mutableStateOf(app.settings.desktopMode) }
     var orientation by remember { mutableStateOf(app.settings.screenOrientation) }
+    var showTabSearch by remember { mutableStateOf(app.settings.showTabSearch) }
+    var showTabRestore by remember { mutableStateOf(app.settings.showTabRestore) }
+    var pullRefresh by remember { mutableStateOf(app.settings.pullRefresh) }
+    var swipeNav by remember { mutableStateOf(app.settings.swipeNavigation) }
+    var incognito by remember { mutableStateOf(app.settings.incognito) }
+    var adBlock by remember { mutableStateOf(app.settings.adBlock) }
+    var showCustomEngine by remember { mutableStateOf(false) }
+    var customEngine by remember { mutableStateOf(app.settings.searchEngine) }
 
     SettingsGroup("搜索引擎")
     engines.forEach { (name, url) ->
@@ -326,6 +336,16 @@ private fun BrowsingSettings(controller: BrowserController) {
             app.settings.searchEngine = url
         }
     }
+    if (engine !in engines.map { it.second }) {
+        SettingsRadioRow("自定义：$engine", true) {}
+    }
+    TextButton(
+        onClick = {
+            customEngine = app.settings.searchEngine
+            showCustomEngine = true
+        },
+        modifier = Modifier.padding(start = 10.dp)
+    ) { Text("自定义搜索引擎…", fontSize = 13.sp) }
 
     SettingsGroup("网页字体大小")
     Text(
@@ -341,8 +361,8 @@ private fun BrowsingSettings(controller: BrowserController) {
             app.settings.textZoom = zoom
         },
         onValueChangeFinished = { controller.applySettings() },
-        valueRange = 80f..160f,
-        steps = 15,
+        valueRange = 50f..200f,
+        steps = 29,
         modifier = Modifier.padding(horizontal = 18.dp)
     )
 
@@ -374,6 +394,87 @@ private fun BrowsingSettings(controller: BrowserController) {
                 label = { Text(label, fontSize = 12.sp) }
             )
         }
+    }
+
+    SettingsGroup("标签页")
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    SettingsSwitchRow("标签面板显示搜索框", showTabSearch) { value ->
+        showTabSearch = value
+        app.settings.showTabSearch = value
+    }
+    SettingsSwitchRow("显示「恢复刚关闭的标签页」", showTabRestore) { value ->
+        showTabRestore = value
+        app.settings.showTabRestore = value
+    }
+
+    SettingsGroup("手势")
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    SettingsSwitchRow("下拉刷新网页", pullRefresh) { value ->
+        pullRefresh = value
+        app.settings.pullRefresh = value
+    }
+    SettingsSwitchRow("边缘侧滑前进 / 后退", swipeNav) { value ->
+        swipeNav = value
+        app.settings.swipeNavigation = value
+    }
+
+    SettingsGroup("隐私与拦截")
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    SettingsSwitchRow("无痕模式（不记录历史）", incognito) { value ->
+        incognito = value
+        app.settings.incognito = value
+        Toast.makeText(
+            context,
+            if (value) "已开启无痕模式，浏览历史不再记录" else "已关闭无痕模式",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+    SettingsSwitchRow("拦截广告与弹窗", adBlock) { value ->
+        adBlock = value
+        app.settings.adBlock = value
+        controller.applySettings()
+    }
+
+    if (showCustomEngine) {
+        AlertDialog(
+            onDismissRequest = { showCustomEngine = false },
+            title = { Text("自定义搜索引擎") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = customEngine,
+                        onValueChange = { customEngine = it },
+                        singleLine = true,
+                        label = { Text("搜索地址") },
+                        placeholder = { Text("https://example.com/search?q=%s") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "用 %s 代表搜索关键词。",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val url = customEngine.trim()
+                        if (!url.contains("%s")) {
+                            Toast.makeText(context, "地址中需要包含 %s", Toast.LENGTH_SHORT).show()
+                            return@TextButton
+                        }
+                        app.settings.searchEngine = url
+                        engine = url
+                        showCustomEngine = false
+                    }
+                ) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomEngine = false }) { Text("取消") }
+            }
+        )
     }
 }
 
@@ -471,6 +572,22 @@ private fun HomeSettings() {
     val app = context.applicationContext as App
     var pages by remember { mutableStateOf(app.settings.homePageCount) }
     var compact by remember { mutableStateOf(app.settings.homeAutoCompact) }
+    var wallpaper by remember { mutableStateOf(app.settings.homeWallpaper) }
+    val wallpaperPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            app.settings.homeWallpaper = uri.toString()
+            wallpaper = uri.toString()
+            Toast.makeText(context, "主页壁纸已更新", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     SettingsGroup("快捷入口页数（可自由扩展）")
     Row(
@@ -502,7 +619,7 @@ private fun HomeSettings() {
         }
     }
     Text(
-        "最少 2 页，可一直增加到 99 页；第一页 12 个、第二页 20 个、第三页起每页 32 个。减少页数不会删除图标，超出页数的图标会暂时隐藏。",
+        "最少 2 页，可一直增加到 99 页；第一页 16 个、第二页 24 个、第三页起每页 32 个。减少页数不会删除图标，超出页数的图标会暂时隐藏。",
         fontSize = 11.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)
@@ -520,6 +637,31 @@ private fun HomeSettings() {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)
     )
+
+    SettingsGroup("主页壁纸")
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            if (wallpaper == null) "纯色背景" else "已设置自定义壁纸",
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
+        )
+        TextButton(onClick = { wallpaperPicker.launch(arrayOf("image/*")) }) {
+            Text(if (wallpaper == null) "选择图片" else "更换")
+        }
+        if (wallpaper != null) {
+            TextButton(onClick = {
+                app.settings.homeWallpaper = null
+                wallpaper = null
+            }) { Text("清除") }
+        }
+    }
 }
 
 @Composable

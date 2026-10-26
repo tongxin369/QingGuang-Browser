@@ -12,7 +12,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         Bookmark::class, BookmarkFolder::class, HomeItem::class, HistoryItem::class,
         LocalPage::class, DownloadRecord::class
     ],
-    version = 7,
+    version = 9,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -35,9 +35,26 @@ abstract class AppDatabase : RoomDatabase() {
                     "qingguang.db"
                 ).addMigrations(
                     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
-                    MIGRATION_5_6, MIGRATION_6_7
+                    MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9
                 ).build().also { instance = it }
             }
+
+        /** v9：书签支持拖动排序 */
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE bookmarks ADD COLUMN sortOrder INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /** v8：下载记录补充系统任务 id、文件大小、MIME 与本地地址，用于下载中心管理 */
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE downloads ADD COLUMN managerId INTEGER NOT NULL DEFAULT -1")
+                db.execSQL("ALTER TABLE downloads ADD COLUMN totalBytes INTEGER NOT NULL DEFAULT -1")
+                db.execSQL("ALTER TABLE downloads ADD COLUMN mimeType TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE downloads ADD COLUMN localUri TEXT")
+            }
+        }
 
         /** v7：本地网页记录原始文件/目录，用于源码编辑后写回手机原文件夹 */
         private val MIGRATION_6_7 = object : Migration(6, 7) {

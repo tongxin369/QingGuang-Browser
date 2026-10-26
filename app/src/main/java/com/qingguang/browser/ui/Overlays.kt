@@ -1,11 +1,14 @@
 package com.qingguang.browser.ui
 
 import android.Manifest
+import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.database.Cursor
 import android.net.Uri
 import android.provider.Settings
+import android.webkit.MimeTypeMap
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -14,6 +17,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.zIndex
+import kotlin.math.roundToInt
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,16 +52,22 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -83,6 +98,7 @@ import com.qingguang.browser.ui.theme.ThemeController
 import com.qingguang.browser.util.BackupInfo
 import com.qingguang.browser.util.BackupManager
 import com.qingguang.browser.web.BrowserController
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
@@ -113,7 +129,7 @@ fun OverlayPageHost(
             when (page) {
                 OverlayPage.BOOKMARKS -> BookmarksPage(controller, onClose)
                 OverlayPage.HISTORY -> HistoryPage(controller, onClose)
-                OverlayPage.DOWNLOADS -> DownloadsPage()
+                OverlayPage.DOWNLOADS -> DownloadsPage(controller)
                 OverlayPage.DATA_BACKUPS -> BackupsPage(controller)
                 OverlayPage.SETTINGS -> SettingsPage(controller)
             }
@@ -152,6 +168,92 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
     var deleteFolder by remember { mutableStateOf<com.qingguang.browser.data.BookmarkFolder?>(null) }
     var deleteBookmark by remember { mutableStateOf<com.qingguang.browser.data.Bookmark?>(null) }
     var iconTarget by remember { mutableStateOf<com.qingguang.browser.data.Bookmark?>(null) }
+    var query by remember { mutableStateOf("") }
+    var selecting by remember { mutableStateOf(false) }
+    val selectedIds = remember { mutableStateListOf<Long>() }
+    var showMenu by remember { mutableStateOf(false) }
+    var confirmBatchDelete by remember { mutableStateOf(false) }
+    var batchMove by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var sortMode by remember { mutableStateOf(false) }
+    var dragId by remember { mutableStateOf<Long?>(null) }
+    var dragOffset by remember { mutableStateOf(0f) }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val rowHeightPx = with(density) { 66.dp.toPx() }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/html")
+    ) { uri ->
+        if (uri != null) {
+            val html = buildBookmarkHtml(bookmarks, folders)
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use {
+                    it.write(html.toByteArray(Charsets.UTF_8))
+                } ?: error("无法写入")
+            }.onSuccess {
+                message = "已导出 ${bookmarks.size} 个书签到 HTML"
+            }.onFailure {
+                message = "导出失败：${it.message}"
+            }
+        }
+    }
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val text = runCatching {
+                    context.contentResolver.openInputStream(uri)
+                        ?.bufferedReader(Charsets.UTF_8)
+                        ?.use { it.readText() }
+                }.getOrNull()
+                if (text.isNullOrBlank()) {
+                    message = "导入失败：无法读取文件"
+                    return@launch
+                }
+                val imported = parseBookmarkHtml(text)
+                if (imported.isEmpty()) {
+                    message = "文件中没有找到书签"
+                    return@launch
+                }
+                val knowFolders = folders.toMutableList()
+                var created = 0
+                imported.forEach { entry ->
+                    var parentId = 0L
+                    entry.folderPath.forEach { name ->
+                        val existing = knowFolders.firstOrNull {
+                            it.parentId == parentId && it.name == name
+                        }
+                        parentId = if (existing != null) {
+                            existing.id
+                        } else {
+                            val id = app.database.bookmarkFolderDao().insert(
+                                com.qingguang.browser.data.BookmarkFolder(
+                                    name = name,
+                                    parentId = parentId
+                                )
+                            )
+                            knowFolders.add(
+                                com.qingguang.browser.data.BookmarkFolder(
+                                    id = id, name = name, parentId = parentId
+                                )
+                            )
+                            id
+                        }
+                    }
+                    app.database.bookmarkDao().insert(
+                        com.qingguang.browser.data.Bookmark(
+                            title = entry.title,
+                            url = entry.url,
+                            folderId = currentId.takeIf { entry.folderPath.isEmpty() } ?: parentId
+                        )
+                    )
+                    created++
+                }
+                message = "已导入 $created 个书签"
+            }
+        }
+    }
 
     fun openFolder(id: Long) {
         path.add(id)
@@ -185,6 +287,33 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
     val chain = folderChain(folders, currentId)
     val subFolders = folders.filter { it.parentId == currentId }.sortedBy { it.createdAt }
     val itemsHere = bookmarks.filter { it.folderId == currentId }
+    val keyword = query.trim()
+    val visibleFolders = if (keyword.isEmpty()) subFolders
+    else folders.filter { it.name.contains(keyword, ignoreCase = true) }
+    val visibleBookmarks = if (keyword.isEmpty()) itemsHere
+    else bookmarks.filter {
+        it.title.contains(keyword, ignoreCase = true) ||
+            it.url.contains(keyword, ignoreCase = true)
+    }
+    val shownFolders = if (selecting || sortMode) emptyList() else visibleFolders
+
+    fun finishReorder(fromIndex: Int) {
+        val moved = (dragOffset / rowHeightPx).roundToInt()
+        dragId = null
+        dragOffset = 0f
+        if (moved == 0) return
+        val list = visibleBookmarks.toMutableList()
+        if (fromIndex !in list.indices) return
+        val target = (fromIndex + moved).coerceIn(0, list.lastIndex)
+        if (target == fromIndex) return
+        val item = list.removeAt(fromIndex)
+        list.add(target, item)
+        scope.launch {
+            list.forEachIndexed { index, bookmark ->
+                app.database.bookmarkDao().updateSortOrder(bookmark.id, index + 1)
+            }
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -228,6 +357,63 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                     modifier = Modifier.size(20.dp)
                 )
             }
+            IconButton(onClick = { showMenu = true }, modifier = Modifier.size(40.dp)) {
+                Icon(
+                    Icons.Filled.MoreVert,
+                    contentDescription = "更多",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                singleLine = true,
+                placeholder = { Text("搜索书签（名称或网址）", fontSize = 13.sp) },
+                modifier = Modifier.weight(1f)
+            )
+            if (selecting) {
+                TextButton(onClick = {
+                    selecting = false
+                    selectedIds.clear()
+                    query = ""
+                }) { Text("完成") }
+            }
+        }
+        if (selecting) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "已选 ${selectedIds.size} 项",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = {
+                    selectedIds.clear()
+                    selectedIds.addAll(visibleBookmarks.map { it.id })
+                }) { Text("全选") }
+            }
+        }
+        message?.let {
+            Text(
+                it,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.secondary,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp)
+            )
         }
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -248,14 +434,15 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                     )
                 }
         ) {
-            if (subFolders.isEmpty() && itemsHere.isEmpty()) {
+            if (shownFolders.isEmpty() && visibleBookmarks.isEmpty()) {
                 EmptyHint(
-                    if (chain.isEmpty()) "还没有书签。打开网页后，从菜单里点「添加书签」。"
+                    if (keyword.isNotEmpty()) "没有找到匹配的书签。"
+                    else if (chain.isEmpty()) "还没有书签。打开网页后，从菜单里点「添加书签」。"
                     else "这个文件夹还是空的，点右上角可以新建子文件夹。"
                 )
             } else {
                 LazyColumn(Modifier.fillMaxSize()) {
-                    items(subFolders, key = { "f-${it.id}" }) { folder ->
+                    items(shownFolders, key = { "f-${it.id}" }) { folder ->
                         BookmarkFolderRow(
                             folder = folder,
                             count = bookmarks.count { it.folderId == folder.id },
@@ -263,21 +450,180 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                             onLongClick = { folderAction = folder }
                         )
                     }
-                    items(itemsHere, key = { "b-${it.id}" }) { bookmark ->
-                        BookmarkListRow(
-                            bookmark = bookmark,
-                            onClick = {
-                                controller.loadUrl(bookmark.url)
-                                onClose()
-                            },
-                            onLongClick = { bookmarkAction = bookmark },
-                            onDelete = { deleteBookmark = bookmark }
-                        )
+                    itemsIndexed(visibleBookmarks, key = { _, it -> "b-${it.id}" }) { index, bookmark ->
+                        val dragging = dragId == bookmark.id
+                        Box(
+                            Modifier
+                                .offset {
+                                    IntOffset(
+                                        0,
+                                        if (dragging) dragOffset.roundToInt() else 0
+                                    )
+                                }
+                                .zIndex(if (dragging) 1f else 0f)
+                                .then(
+                                    if (sortMode) Modifier.pointerInput(bookmark.id) {
+                                        detectVerticalDragGestures(
+                                            onDragStart = {
+                                                dragId = bookmark.id
+                                                dragOffset = 0f
+                                            },
+                                            onVerticalDrag = { change, amount ->
+                                                change.consume()
+                                                dragOffset += amount
+                                            },
+                                            onDragEnd = { finishReorder(index) },
+                                            onDragCancel = {
+                                                dragId = null
+                                                dragOffset = 0f
+                                            }
+                                        )
+                                    } else Modifier
+                                )
+                        ) {
+                            BookmarkListRow(
+                                bookmark = bookmark,
+                                selectionMode = selecting,
+                                selected = bookmark.id in selectedIds,
+                                onClick = {
+                                    if (selecting) {
+                                        if (bookmark.id in selectedIds) selectedIds.remove(bookmark.id)
+                                        else selectedIds.add(bookmark.id)
+                                    } else if (!sortMode) {
+                                        controller.loadUrl(bookmark.url)
+                                        onClose()
+                                    }
+                                },
+                                onLongClick = {
+                                    if (selecting) {
+                                        if (bookmark.id in selectedIds) selectedIds.remove(bookmark.id)
+                                        else selectedIds.add(bookmark.id)
+                                    } else if (!sortMode) {
+                                        bookmarkAction = bookmark
+                                    }
+                                },
+                                onDelete = { deleteBookmark = bookmark },
+                                trailingHint = if (sortMode) "拖动" else null
+                            )
+                        }
                     }
                     item { Spacer(Modifier.height(12.dp)) }
                 }
             }
         }
+        if (selecting) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(
+                    onClick = { batchMove = true },
+                    enabled = selectedIds.isNotEmpty()
+                ) { Text("移动到文件夹") }
+                TextButton(
+                    onClick = { confirmBatchDelete = true },
+                    enabled = selectedIds.isNotEmpty()
+                ) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+    }
+
+    if (showMenu) {
+        ActionDialog(
+            title = "书签工具",
+            onDismiss = { showMenu = false },
+            actions = listOf(
+                "批量选择" to {
+                    showMenu = false
+                    selecting = true
+                    query = ""
+                },
+                (if (sortMode) "结束拖动排序" else "拖动排序书签") to {
+                    showMenu = false
+                    sortMode = !sortMode
+                    selecting = false
+                    query = ""
+                    selectedIds.clear()
+                },
+                "导入书签 HTML" to {
+                    showMenu = false
+                    importLauncher.launch(arrayOf("text/html", "text/plain", "*/*"))
+                },
+                "导出书签 HTML" to {
+                    showMenu = false
+                    exportLauncher.launch("bookmarks.html")
+                }
+            )
+        )
+    }
+
+    if (confirmBatchDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmBatchDelete = false },
+            title = { Text("删除所选书签？") },
+            text = { Text("将删除 ${selectedIds.size} 个书签，此操作不可撤销。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val ids = selectedIds.toList()
+                    scope.launch {
+                        ids.forEach { app.database.bookmarkDao().delete(it) }
+                    }
+                    selectedIds.clear()
+                    confirmBatchDelete = false
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmBatchDelete = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (batchMove) {
+        val flatFolders = flattenFolders(folders)
+        AlertDialog(
+            onDismissRequest = { batchMove = false },
+            title = { Text("移动 ${selectedIds.size} 个书签到") },
+            text = {
+                LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                    item {
+                        FolderChoiceRow("未分类", selected = false) {
+                            val ids = selectedIds.toList()
+                            scope.launch {
+                                ids.forEach {
+                                    app.database.bookmarkDao().moveToFolder(it, 0L)
+                                }
+                            }
+                            selectedIds.clear()
+                            batchMove = false
+                        }
+                    }
+                    items(flatFolders, key = { it.first.id }) { (folder, depth) ->
+                        FolderChoiceRow(
+                            "    ".repeat(depth) + folder.name,
+                            selected = false
+                        ) {
+                            val ids = selectedIds.toList()
+                            scope.launch {
+                                ids.forEach {
+                                    app.database.bookmarkDao().moveToFolder(it, folder.id)
+                                }
+                            }
+                            selectedIds.clear()
+                            batchMove = false
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { batchMove = false }) { Text("取消") }
+            }
+        )
     }
 
     if (showNewFolder) {
@@ -650,19 +996,37 @@ private fun BookmarkFolderRow(
 @Composable
 private fun BookmarkListRow(
     bookmark: com.qingguang.browser.data.Bookmark,
+    selectionMode: Boolean,
+    selected: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    trailingHint: String? = null
 ) {
     Row(
         Modifier
             .fillMaxWidth()
-            .pointerInput(bookmark.id) {
-                detectTapGestures(onTap = { onClick() }, onLongPress = { onLongClick() })
+            .pointerInput(bookmark.id, selectionMode) {
+                if (trailingHint == null) {
+                    detectTapGestures(onTap = { onClick() }, onLongPress = { onLongClick() })
+                }
             }
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (selectionMode) {
+            Checkbox(checked = selected, onCheckedChange = { onClick() })
+            Spacer(Modifier.width(4.dp))
+        }
+        if (trailingHint != null) {
+            Icon(
+                Icons.Filled.MoreVert,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+        }
         Box(
             Modifier.size(34.dp),
             contentAlignment = Alignment.Center
@@ -695,12 +1059,20 @@ private fun BookmarkListRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        IconButton(onClick = onDelete, modifier = Modifier.size(34.dp)) {
-            Icon(
-                Icons.Filled.Close,
-                contentDescription = "删除书签",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp)
+        if (trailingHint == null) {
+            IconButton(onClick = onDelete, modifier = Modifier.size(34.dp)) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "删除书签",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        } else {
+            Text(
+                trailingHint,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
@@ -830,34 +1202,89 @@ private fun HistoryPage(controller: BrowserController, onClose: () -> Unit) {
         }
     }
     var confirmClear by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var selecting by remember { mutableStateOf(false) }
+    val selectedUrls = remember { mutableStateListOf<String>() }
+    var confirmDeleteSelected by remember { mutableStateOf(false) }
+    val keyword = query.trim()
+    val filtered = remember(history, keyword) {
+        if (keyword.isEmpty()) history
+        else history.filter {
+            it.title.contains(keyword, ignoreCase = true) ||
+                it.url.contains(keyword, ignoreCase = true)
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.End
+                .padding(horizontal = 12.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                singleLine = true,
+                placeholder = { Text("搜索历史（名称或网址）", fontSize = 13.sp) },
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = {
+                selecting = !selecting
+                if (!selecting) selectedUrls.clear()
+            }) { Text(if (selecting) "完成" else "选择") }
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (selecting) {
+                Text(
+                    "已选 ${selectedUrls.size} 项",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = {
+                    selectedUrls.clear()
+                    selectedUrls.addAll(filtered.map { it.url })
+                }) { Text("全选") }
+            } else {
+                Spacer(Modifier.weight(1f))
+            }
             TextButton(onClick = { confirmClear = true }, enabled = history.isNotEmpty()) {
                 Text("清空历史")
             }
         }
-        if (history.isEmpty()) {
-            EmptyHint("还没有浏览历史。")
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        if (filtered.isEmpty()) {
+            EmptyHint(if (keyword.isNotEmpty()) "没有匹配的历史记录。" else "还没有浏览历史。")
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
-                items(history, key = { it.id }) { item ->
+                items(filtered, key = { it.id }) { item ->
                     ListItem(
                         leadingContent = {
-                            val style = iconStyles[item.url]
-                            SiteIconBadge(
-                                title = item.title,
-                                url = item.url,
-                                iconColor = style?.first,
-                                iconText = style?.second,
-                                size = 34.dp,
-                                corner = 10.dp
-                            )
+                            if (selecting) {
+                                Checkbox(
+                                    checked = item.url in selectedUrls,
+                                    onCheckedChange = {
+                                        if (item.url in selectedUrls) selectedUrls.remove(item.url)
+                                        else selectedUrls.add(item.url)
+                                    }
+                                )
+                            } else {
+                                val style = iconStyles[item.url]
+                                SiteIconBadge(
+                                    title = item.title,
+                                    url = item.url,
+                                    iconColor = style?.first,
+                                    iconText = style?.second,
+                                    size = 34.dp,
+                                    corner = 10.dp
+                                )
+                            }
                         },
                         headlineContent = {
                             Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -878,13 +1305,53 @@ private fun HistoryPage(controller: BrowserController, onClose: () -> Unit) {
                             }
                         },
                         modifier = Modifier.clickable {
-                            controller.loadUrl(item.url)
-                            onClose()
+                            if (selecting) {
+                                if (item.url in selectedUrls) selectedUrls.remove(item.url)
+                                else selectedUrls.add(item.url)
+                            } else {
+                                controller.loadUrl(item.url)
+                                onClose()
+                            }
                         }
                     )
                 }
             }
         }
+        if (selecting) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    onClick = { confirmDeleteSelected = true },
+                    enabled = selectedUrls.isNotEmpty()
+                ) {
+                    Text("删除所选", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+    }
+
+    if (confirmDeleteSelected) {
+        AlertDialog(
+            onDismissRequest = { confirmDeleteSelected = false },
+            title = { Text("删除所选历史？") },
+            text = { Text("将删除 ${selectedUrls.size} 条浏览历史。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val urls = selectedUrls.toList()
+                    scope.launch { urls.forEach { app.database.historyDao().deleteByUrl(it) } }
+                    selectedUrls.clear()
+                    confirmDeleteSelected = false
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDeleteSelected = false }) { Text("取消") }
+            }
+        )
     }
 
     if (confirmClear) {
@@ -905,19 +1372,102 @@ private fun HistoryPage(controller: BrowserController, onClose: () -> Unit) {
     }
 }
 
+private data class DownloadProgress(val status: Int, val bytes: Long, val total: Long)
+
 @Composable
-private fun DownloadsPage() {
+private fun DownloadsPage(controller: BrowserController) {
     val context = LocalContext.current
     val app = context.applicationContext as App
     val scope = rememberCoroutineScope()
     val downloads by app.database.downloadDao()
         .observeAll()
         .collectAsStateWithLifecycle(initialValue = emptyList())
+    val manager = remember {
+        context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+    }
+    var progressMap by remember { mutableStateOf<Map<Long, DownloadProgress>>(emptyMap()) }
+    var showDirDialog by remember { mutableStateOf(false) }
+    var dirText by remember { mutableStateOf(app.settings.downloadSubDir) }
+    var pendingDelete by remember { mutableStateOf<com.qingguang.browser.data.DownloadRecord?>(null) }
+    var subDir by remember { mutableStateOf(app.settings.downloadSubDir) }
+
+    // 轮询系统下载管理器，刷新进度与状态
+    LaunchedEffect(downloads) {
+        val tracked = downloads.filter { it.managerId > 0 && it.status != "下载完成" && it.status != "已取消" }
+        if (tracked.isEmpty()) {
+            progressMap = emptyMap()
+            return@LaunchedEffect
+        }
+        while (true) {
+            val snapshot = mutableMapOf<Long, DownloadProgress>()
+            tracked.forEach { record ->
+                queryDownload(manager, record.managerId)?.let { snapshot[record.id] = it }
+            }
+            progressMap = snapshot
+            snapshot.forEach { (recordId, progress) ->
+                val record = tracked.firstOrNull { it.id == recordId } ?: return@forEach
+                val label = when (progress.status) {
+                    DownloadManager.STATUS_RUNNING -> "下载中"
+                    DownloadManager.STATUS_PAUSED -> "已暂停"
+                    DownloadManager.STATUS_SUCCESSFUL -> "下载完成"
+                    DownloadManager.STATUS_FAILED -> "下载失败"
+                    else -> "等待下载"
+                }
+                if (label != record.status) {
+                    scope.launch { app.database.downloadDao().updateStatus(record.id, label) }
+                }
+            }
+            delay(900)
+        }
+    }
+
+    fun openRecord(record: com.qingguang.browser.data.DownloadRecord) {
+        val uri = when {
+            record.managerId > 0 -> manager.getUriForDownloadedFile(record.managerId)
+            !record.localUri.isNullOrBlank() -> Uri.parse(record.localUri)
+            else -> null
+        }
+        if (uri == null) {
+            Toast.makeText(context, "文件尚未下载完成或已被删除", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val mime = record.mimeType.ifBlank {
+            MimeTypeMap.getSingleton()
+                .getMimeTypeFromExtension(record.fileName.substringAfterLast('.', "").lowercase())
+                ?: "*/*"
+        }
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mime)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching { context.startActivity(intent) }
+            .onFailure { Toast.makeText(context, "没有可打开该文件的应用", Toast.LENGTH_SHORT).show() }
+    }
 
     Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("保存位置", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                Text(
+                    if (subDir.isBlank()) "下载" else "下载/$subDir",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            TextButton(onClick = {
+                dirText = subDir
+                showDirDialog = true
+            }) { Text("更改") }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Text(
-            "下载文件保存在系统「下载」目录，由系统下载管理器完成。此处仅记录下载历史。",
-            fontSize = 12.sp,
+            "支持暂停 / 继续 / 重试；点击文件可直接打开。下载由系统下载管理器完成。",
+            fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
         )
@@ -926,27 +1476,226 @@ private fun DownloadsPage() {
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
                 items(downloads, key = { it.id }) { record ->
-                    ListItem(
-                        headlineContent = {
-                            Text(record.fileName, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        },
-                        supportingContent = {
-                            Text(
-                                "${record.status} · ${BackupManager.formatTime(record.createdAt)}",
-                                fontSize = 11.sp
-                            )
-                        },
-                        trailingContent = {
-                            IconButton(onClick = {
-                                scope.launch { app.database.downloadDao().delete(record.id) }
-                            }) {
-                                Icon(Icons.Filled.Delete, contentDescription = "删除记录")
+                    val progress = progressMap[record.id]
+                    val running = progress?.status == DownloadManager.STATUS_RUNNING
+                    val paused = progress?.status == DownloadManager.STATUS_PAUSED
+                    val finished = record.status == "下载完成"
+                    val failed = record.status == "下载失败"
+                    val total = progress?.total?.takeIf { it > 0 } ?: record.totalBytes
+                    val bytes = progress?.bytes ?: if (finished) total else 0L
+                    Column(Modifier.fillMaxWidth()) {
+                        ListItem(
+                            headlineContent = {
+                                Text(record.fileName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            },
+                            supportingContent = {
+                                Column {
+                                    Text(
+                                        buildString {
+                                            append(record.status)
+                                            if (total > 0) {
+                                                append(" · ")
+                                                append(BackupManager.formatSize(bytes.coerceAtLeast(0)))
+                                                append(" / ")
+                                                append(BackupManager.formatSize(total))
+                                            }
+                                            append(" · ")
+                                            append(BackupManager.formatTime(record.createdAt))
+                                        },
+                                        fontSize = 11.sp
+                                    )
+                                    if (running || paused) {
+                                        val ratio = if (total > 0) (bytes.toFloat() / total) else 0f
+                                        LinearProgressIndicator(
+                                            progress = { ratio.coerceIn(0f, 1f) },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(top = 4.dp)
+                                                .height(3.dp)
+                                        )
+                                    }
+                                }
+                            },
+                            trailingContent = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (record.managerId > 0 && !finished) {
+                                        if (running) {
+                                            IconButton(onClick = {
+                                                if (pauseDownloadTask(manager, record.managerId)) {
+                                                    scope.launch {
+                                                        app.database.downloadDao()
+                                                            .updateStatus(record.id, "已暂停")
+                                                    }
+                                                } else {
+                                                    Toast.makeText(
+                                                        context,
+                                                        "当前系统不支持暂停下载",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                }
+                                            }) {
+                                                Icon(
+                                                    Icons.Filled.Pause,
+                                                    contentDescription = "暂停下载"
+                                                )
+                                            }
+                                        }
+                                        if (paused || (!running && !finished && !failed)) {
+                                            IconButton(onClick = {
+                                                if (resumeDownloadTask(manager, record.managerId)) {
+                                                    scope.launch {
+                                                        app.database.downloadDao()
+                                                            .updateStatus(record.id, "下载中")
+                                                    }
+                                                } else {
+                                                    Toast.makeText(
+                                                        context,
+                                                        "当前系统不支持继续下载，请使用重试",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                }
+                                            }) {
+                                                Icon(
+                                                    Icons.Filled.PlayArrow,
+                                                    contentDescription = "继续下载"
+                                                )
+                                            }
+                                        }
+                                    }
+                                    if (failed) {
+                                        TextButton(onClick = {
+                                            controller.retryDownload(
+                                                record.url,
+                                                record.fileName,
+                                                record.mimeType
+                                            )
+                                            scope.launch {
+                                                app.database.downloadDao().delete(record.id)
+                                            }
+                                        }) { Text("重试", fontSize = 12.sp) }
+                                    }
+                                    if (finished || record.localUri != null) {
+                                        TextButton(onClick = { openRecord(record) }) {
+                                            Text("打开", fontSize = 12.sp)
+                                        }
+                                    }
+                                    IconButton(onClick = { pendingDelete = record }) {
+                                        Icon(Icons.Filled.Delete, contentDescription = "删除记录")
+                                    }
+                                }
+                            },
+                            modifier = Modifier.clickable {
+                                if (finished || record.localUri != null) openRecord(record)
                             }
-                        }
-                    )
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    }
                 }
             }
         }
+    }
+
+    if (showDirDialog) {
+        AlertDialog(
+            onDismissRequest = { showDirDialog = false },
+            title = { Text("下载保存位置") },
+            text = {
+                Column {
+                    Text(
+                        "文件会保存在系统「下载」目录下的指定子目录；留空则保存在下载根目录。",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = dirText,
+                        onValueChange = { dirText = it },
+                        singleLine = true,
+                        label = { Text("子目录名称") },
+                        placeholder = { Text("例如：轻光浏览器") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val cleaned = dirText.trim().trim('/')
+                    app.settings.downloadSubDir = cleaned
+                    subDir = cleaned
+                    showDirDialog = false
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        dirText = ""
+                    }) { Text("用下载根目录") }
+                    TextButton(onClick = { showDirDialog = false }) { Text("取消") }
+                }
+            }
+        )
+    }
+
+    pendingDelete?.let { record ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除下载记录？") },
+            text = { Text("只删除下载中心里的记录，已下载的文件会保留在下载目录。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (record.managerId > 0 && record.status != "下载完成") {
+                        runCatching { manager.remove(record.managerId) }
+                    }
+                    scope.launch { app.database.downloadDao().delete(record.id) }
+                    pendingDelete = null
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+            }
+        )
+    }
+}
+
+/** 系统 DownloadManager 的 pause/resume 在 SDK 中未公开，只能通过反射调用 */
+private fun callDownloadManager(manager: DownloadManager, method: String, id: Long): Boolean =
+    runCatching {
+        val target = DownloadManager::class.java.getMethod(method, LongArray::class.java)
+        target.invoke(manager, longArrayOf(id))
+        true
+    }.getOrDefault(false)
+
+private fun pauseDownloadTask(manager: DownloadManager, id: Long): Boolean =
+    callDownloadManager(manager, "pauseDownload", id)
+
+private fun resumeDownloadTask(manager: DownloadManager, id: Long): Boolean =
+    callDownloadManager(manager, "resumeDownload", id)
+
+/** 查询系统下载任务当前状态；任务不存在时返回 null */
+private fun queryDownload(manager: DownloadManager, id: Long): DownloadProgress? {
+    if (id <= 0) return null
+    var cursor: Cursor? = null
+    return try {
+        cursor = manager.query(DownloadManager.Query().setFilterById(id))
+        if (cursor.moveToFirst()) {
+            DownloadProgress(
+                status = cursor.getInt(
+                    cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)
+                ),
+                bytes = cursor.getLong(
+                    cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
+                ),
+                total = cursor.getLong(
+                    cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
+                )
+            )
+        } else {
+            null
+        }
+    } catch (_: Exception) {
+        null
+    } finally {
+        cursor?.close()
     }
 }
 
@@ -1364,6 +2113,99 @@ private fun GlobalBackupSection(controller: BrowserController) {
 }
 
 // 设置页已拆分到 SettingsPages.kt（目录 + 子页）
+
+private data class ImportedBookmark(
+    val title: String,
+    val url: String,
+    val folderPath: List<String>
+)
+
+private fun htmlEscape(value: String): String = value
+    .replace("&", "&amp;")
+    .replace("<", "&lt;")
+    .replace(">", "&gt;")
+    .replace("\"", "&quot;")
+
+private fun htmlUnescape(value: String): String = value
+    .replace("&quot;", "\"")
+    .replace("&#39;", "'")
+    .replace("&lt;", "<")
+    .replace("&gt;", ">")
+    .replace("&amp;", "&")
+
+/** 生成 Netscape 书签 HTML，可被 Chrome / 系统浏览器导入 */
+private fun buildBookmarkHtml(
+    bookmarks: List<com.qingguang.browser.data.Bookmark>,
+    folders: List<com.qingguang.browser.data.BookmarkFolder>
+): String {
+    val sb = StringBuilder()
+    sb.append("<!DOCTYPE NETSCAPE-Bookmark-file-1>\n")
+    sb.append("<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\n")
+    sb.append("<TITLE>Bookmarks</TITLE>\n<H1>Bookmarks</H1>\n<DL><p>\n")
+    fun walk(parentId: Long, depth: Int) {
+        val pad = "    ".repeat(depth)
+        bookmarks.filter { it.folderId == parentId }.forEach { bookmark ->
+            sb.append(pad).append("<DT><A HREF=\"")
+                .append(htmlEscape(bookmark.url)).append("\" ADD_DATE=\"")
+                .append(bookmark.createdAt / 1000).append("\">")
+                .append(htmlEscape(bookmark.title)).append("</A>\n")
+        }
+        folders.filter { it.parentId == parentId }.sortedBy { it.createdAt }.forEach { folder ->
+            sb.append(pad).append("<DT><H3>").append(htmlEscape(folder.name)).append("</H3>\n")
+            sb.append(pad).append("<DL><p>\n")
+            walk(folder.id, depth + 1)
+            sb.append(pad).append("</DL><p>\n")
+        }
+    }
+    walk(0L, 0)
+    sb.append("</DL><p>\n")
+    return sb.toString()
+}
+
+/** 解析 Netscape 书签 HTML，按 H3 / DL 层级还原文件夹 */
+private fun parseBookmarkHtml(text: String): List<ImportedBookmark> {
+    val result = mutableListOf<ImportedBookmark>()
+    val stack = mutableListOf<String>()
+    var pendingFolder: String? = null
+    val h3Regex = Regex("<H3[^>]*>(.*?)</H3>", RegexOption.IGNORE_CASE)
+    val anchorRegex = Regex(
+        "<A\\s+[^>]*?HREF\\s*=\\s*[\"']([^\"']*)[\"'][^>]*>(.*?)</A>",
+        RegexOption.IGNORE_CASE
+    )
+    val dlOpenRegex = Regex("<DL[^>]*>", RegexOption.IGNORE_CASE)
+    val dlCloseRegex = Regex("</DL>", RegexOption.IGNORE_CASE)
+    text.lineSequence().forEach { raw ->
+        val line = raw.trim()
+        if (line.isEmpty()) return@forEach
+        val h3 = h3Regex.find(line)
+        if (h3 != null) {
+            val name = htmlUnescape(h3.groupValues[1]).trim()
+            pendingFolder = name
+            val rest = line.substring(h3.range.last + 1)
+            if (dlOpenRegex.containsMatchIn(rest)) {
+                if (name.isNotEmpty()) stack.add(name)
+                pendingFolder = null
+            }
+            return@forEach
+        }
+        val dlOpen = dlOpenRegex.find(line)
+        if (dlOpen != null) {
+            pendingFolder?.let { if (it.isNotEmpty()) stack.add(it) }
+            pendingFolder = null
+            if (dlOpen.range.first > 0) return@forEach
+        }
+        if (dlCloseRegex.containsMatchIn(line)) {
+            if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex)
+            return@forEach
+        }
+        val anchor = anchorRegex.find(line) ?: return@forEach
+        val url = htmlUnescape(anchor.groupValues[1]).trim()
+        if (url.isEmpty()) return@forEach
+        val title = htmlUnescape(anchor.groupValues[2]).trim().ifBlank { url }
+        result.add(ImportedBookmark(title, url, stack.toList()))
+    }
+    return result
+}
 
 @Composable
 private fun EmptyHint(text: String) {

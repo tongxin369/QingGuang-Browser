@@ -2,10 +2,12 @@
 
 package com.qingguang.browser.ui
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -48,29 +50,42 @@ import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Restore
+import androidx.compose.material.icons.filled.ScreenRotation
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Tab
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -85,6 +100,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
@@ -139,6 +156,8 @@ fun BrowserScreen(controller: BrowserController) {
     var showMenu by remember { mutableStateOf(false) }
     var showAddBookmark by remember { mutableStateOf(false) }
     var showSource by remember { mutableStateOf(false) }
+    var showOrientation by remember { mutableStateOf(false) }
+    var showFind by remember { mutableStateOf(false) }
 
     LaunchedEffect(controller.currentUrl) {
         if (!controller.showHome) address = controller.currentUrl
@@ -148,9 +167,13 @@ fun BrowserScreen(controller: BrowserController) {
     }
 
     BackHandler(
-        enabled = overlay != null || showTabs || showMenu || !controller.showHome
+        enabled = overlay != null || showTabs || showMenu || showFind || !controller.showHome
     ) {
         when {
+            showFind -> {
+                showFind = false
+                controller.stopFind()
+            }
             overlay != null -> overlay = null
             showTabs -> showTabs = false
             showMenu -> showMenu = false
@@ -207,7 +230,19 @@ fun BrowserScreen(controller: BrowserController) {
                         overlay = it
                     },
                     onAddBookmark = { showAddBookmark = true },
-                    onViewSource = { showSource = true }
+                    onViewSource = { showSource = true },
+                    onScreenOrientation = { showOrientation = true },
+                    onFind = { showFind = true }
+                )
+            }
+            if (showFind) {
+                FindBar(
+                    controller = controller,
+                    onClose = {
+                        showFind = false
+                        controller.stopFind()
+                    },
+                    modifier = Modifier.align(Alignment.TopCenter)
                 )
             }
         }
@@ -243,6 +278,215 @@ fun BrowserScreen(controller: BrowserController) {
             onConfirm = { controller.confirmDownload(it) },
             onCancel = { controller.cancelDownload() }
         )
+    }
+    controller.longPressTarget?.let { target ->
+        LongPressMenu(
+            target = target,
+            onDismiss = { controller.dismissLongPress() },
+            onSaveImage = {
+                controller.saveImageFromUrl(target.imageUrl, imageFileName(target.imageUrl))
+                controller.dismissLongPress()
+            },
+            onCopyImage = {
+                copyToClipboard(app, target.imageUrl)
+                Toast.makeText(app, "已复制图片地址", Toast.LENGTH_SHORT).show()
+                controller.dismissLongPress()
+            },
+            onOpenImage = {
+                controller.openInNewTab(target.imageUrl)
+            },
+            onCopyLink = {
+                copyToClipboard(app, target.linkUrl)
+                Toast.makeText(app, "已复制链接", Toast.LENGTH_SHORT).show()
+                controller.dismissLongPress()
+            },
+            onOpenLink = {
+                controller.openInNewTab(target.linkUrl)
+            },
+            onShareLink = {
+                val shareText = target.linkUrl.ifBlank { target.imageUrl }
+                shareUrl(app, shareText)
+                controller.dismissLongPress()
+            }
+        )
+    }
+    if (showOrientation) {
+        val activity = LocalContext.current as? Activity
+        ScreenOrientationDialog(
+            current = app.settings.screenOrientation,
+            onSelect = { index ->
+                app.settings.screenOrientation = index
+                activity?.requestedOrientation = when (index) {
+                    1 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR
+                    2 -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    3 -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                    else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                }
+                showOrientation = false
+            },
+            onDismiss = { showOrientation = false }
+        )
+    }
+}
+
+@Composable
+private fun LongPressMenu(
+    target: com.qingguang.browser.web.LongPressTarget,
+    onDismiss: () -> Unit,
+    onSaveImage: () -> Unit,
+    onCopyImage: () -> Unit,
+    onOpenImage: () -> Unit,
+    onCopyLink: () -> Unit,
+    onOpenLink: () -> Unit,
+    onShareLink: () -> Unit
+) {
+    val actions = buildList<Pair<String, () -> Unit>> {
+        if (target.hasImage) {
+            add("保存图片" to onSaveImage)
+            add("复制图片地址" to onCopyImage)
+            add("新标签页打开图片" to onOpenImage)
+        }
+        if (target.hasLink) {
+            add("复制链接" to onCopyLink)
+            add("新标签页打开链接" to onOpenLink)
+        }
+        add("分享" to onShareLink)
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                when {
+                    target.hasImage && target.hasLink -> "图片 / 链接"
+                    target.hasImage -> "图片"
+                    else -> "链接"
+                }
+            )
+        },
+        text = {
+            Column(Modifier.fillMaxWidth()) {
+                Text(
+                    target.linkUrl.ifBlank { target.imageUrl },
+                    fontSize = 11.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(6.dp))
+                actions.forEach { (label, action) ->
+                    Text(
+                        label,
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                action()
+                            }
+                            .padding(vertical = 11.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        }
+    )
+}
+
+private fun imageFileName(url: String): String {
+    val raw = url.substringBefore('?').substringAfterLast('/').substringBefore('#')
+    if (raw.isNotBlank() && raw.contains('.')) {
+        return runCatching { java.net.URLDecoder.decode(raw, "UTF-8") }.getOrDefault(raw)
+    }
+    return "图片-${System.currentTimeMillis()}.jpg"
+}
+
+@Composable
+private fun ScreenOrientationDialog(
+    current: Int,
+    onSelect: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val options = listOf("跟随系统", "自动旋转", "竖屏", "横屏")
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("屏幕方向") },
+        text = {
+            Column(Modifier.fillMaxWidth()) {
+                options.forEachIndexed { index, label ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(index) }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = current == index, onClick = { onSelect(index) })
+                        Spacer(Modifier.width(8.dp))
+                        Text(label, style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
+@Composable
+private fun FindBar(
+    controller: BrowserController,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var query by remember { mutableStateOf(controller.findQuery) }
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(8.dp),
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = 6.dp,
+        shadowElevation = 4.dp
+    ) {
+        Row(
+            Modifier.padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = {
+                    query = it
+                    controller.startFind(it)
+                },
+                singleLine = true,
+                placeholder = { Text("在页面中查找", fontSize = 13.sp) },
+                modifier = Modifier
+                    .weight(1f)
+                    .focusRequester(focusRequester)
+            )
+            IconButton(onClick = { controller.findNext(false) }) {
+                Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "上一个")
+            }
+            IconButton(onClick = { controller.findNext(true) }) {
+                Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "下一个")
+            }
+            Text(
+                if (controller.findMatches > 0) {
+                    "${controller.findOrdinal}/${controller.findMatches}"
+                } else {
+                    "0/0"
+                },
+                fontSize = 11.sp
+            )
+            IconButton(onClick = onClose) {
+                Icon(Icons.Filled.Close, contentDescription = "关闭查找")
+            }
+        }
     }
 }
 
@@ -408,6 +652,16 @@ private fun TabPanel(
     colors: BarColors,
     onDismiss: () -> Unit
 ) {
+    var query by remember { mutableStateOf("") }
+    val tabSettings = (LocalContext.current.applicationContext as App).settings
+    val filtered = remember(query, controller.tabList) {
+        val keyword = query.trim()
+        if (keyword.isEmpty()) controller.tabList
+        else controller.tabList.filter {
+            it.title.contains(keyword, ignoreCase = true) ||
+                it.url.contains(keyword, ignoreCase = true)
+        }
+    }
     Box(Modifier.fillMaxSize()) {
         // 点击面板上方空白处关闭
         Box(
@@ -454,16 +708,60 @@ private fun TabPanel(
                         )
                     }
                 }
+                if (controller.tabCount >= 2 && tabSettings.showTabSearch) {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        singleLine = true,
+                        placeholder = { Text("搜索标签页", fontSize = 13.sp) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 2.dp)
+                    )
+                }
                 LazyColumn(Modifier.weight(1f, fill = false)) {
-                    items(controller.tabList, key = { it.id }) { tab ->
+                    items(filtered, key = { it.id }) { tab ->
                         TabRow(
                             tab = tab,
                             onClick = {
                                 controller.switchTab(tab.id)
                                 onDismiss()
                             },
-                            onClose = { controller.closeTab(tab.id) }
+                            onClose = { controller.closeTab(tab.id) },
+                            onToggleLock = { controller.toggleTabLock(tab.id) }
                         )
+                    }
+                    if (filtered.isEmpty()) {
+                        item {
+                            Text(
+                                "没有匹配的标签页",
+                                fontSize = 13.sp,
+                                color = colors.content.copy(alpha = 0.6f),
+                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp)
+                            )
+                        }
+                    }
+                }
+                if (controller.canRestoreTab && tabSettings.showTabRestore) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
+                            .clickable {
+                                controller.restoreClosedTab()
+                                onDismiss()
+                            },
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Filled.Restore,
+                            contentDescription = "恢复关闭的标签页",
+                            tint = colors.content.copy(alpha = 0.85f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("恢复刚关闭的标签页", fontSize = 13.sp, color = colors.content)
                     }
                 }
                 Row(
@@ -490,7 +788,12 @@ private fun TabPanel(
 }
 
 @Composable
-private fun TabRow(tab: TabSummary, onClick: () -> Unit, onClose: () -> Unit) {
+private fun TabRow(
+    tab: TabSummary,
+    onClick: () -> Unit,
+    onClose: () -> Unit,
+    onToggleLock: () -> Unit
+) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -533,6 +836,15 @@ private fun TabRow(tab: TabSummary, onClick: () -> Unit, onClose: () -> Unit) {
                 )
             }
         }
+        IconButton(onClick = onToggleLock, modifier = Modifier.size(34.dp)) {
+            Icon(
+                if (tab.locked) Icons.Filled.Lock else Icons.Filled.LockOpen,
+                contentDescription = if (tab.locked) "解锁标签" else "锁定标签",
+                tint = if (tab.locked) MaterialTheme.colorScheme.secondary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp)
+            )
+        }
         IconButton(onClick = onClose, modifier = Modifier.size(34.dp)) {
             Icon(
                 Icons.Filled.Close,
@@ -569,6 +881,7 @@ private fun menuIcon(item: MenuItem, isDark: Boolean, isSpeaking: Boolean): Imag
     MenuItem.DATA_BACKUP -> Icons.Filled.Backup
     MenuItem.SETTINGS -> Icons.Filled.Settings
     MenuItem.REFRESH -> Icons.Filled.Refresh
+    MenuItem.FIND -> Icons.Filled.Search
     MenuItem.VIEW_SOURCE -> Icons.Filled.Code
     MenuItem.PRINT -> Icons.Filled.Print
     MenuItem.READ_ALOUD -> if (isSpeaking) Icons.Filled.StopCircle else Icons.Filled.RecordVoiceOver
@@ -576,14 +889,24 @@ private fun menuIcon(item: MenuItem, isDark: Boolean, isSpeaking: Boolean): Imag
     MenuItem.SHARE -> Icons.Filled.Share
     MenuItem.DARK_TOGGLE -> if (isDark) Icons.Filled.LightMode else Icons.Filled.DarkMode
     MenuItem.DESKTOP_MODE -> Icons.Filled.DesktopWindows
+    MenuItem.SCREEN_ORIENTATION -> Icons.Filled.ScreenRotation
+    MenuItem.READER_MODE -> Icons.Filled.Description
+    MenuItem.OFFLINE_SAVE -> Icons.Filled.SaveAlt
+    MenuItem.DOWNLOAD_IMAGES -> Icons.Filled.Image
     MenuItem.CLEAR_CACHE -> Icons.Filled.Delete
     MenuItem.HOME -> Icons.Filled.Home
     MenuItem.CLOSE_TAB -> Icons.Filled.Close
 }
 
-private fun menuLabel(item: MenuItem, isDark: Boolean, isSpeaking: Boolean): String = when {
+private fun menuLabel(
+    item: MenuItem,
+    isDark: Boolean,
+    isSpeaking: Boolean,
+    readerMode: Boolean
+): String = when {
     item == MenuItem.DARK_TOGGLE && isDark -> "日间模式"
     item == MenuItem.READ_ALOUD && isSpeaking -> "停止朗读"
+    item == MenuItem.READER_MODE && readerMode -> "退出阅读"
     else -> item.label
 }
 
@@ -593,7 +916,9 @@ private fun MenuPanel(
     onDismiss: () -> Unit,
     onOpenOverlay: (OverlayPage) -> Unit,
     onAddBookmark: () -> Unit,
-    onViewSource: () -> Unit
+    onViewSource: () -> Unit,
+    onScreenOrientation: () -> Unit,
+    onFind: () -> Unit
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as App
@@ -625,6 +950,7 @@ private fun MenuPanel(
             MenuItem.DATA_BACKUP -> onOpenOverlay(OverlayPage.DATA_BACKUPS)
             MenuItem.SETTINGS -> onOpenOverlay(OverlayPage.SETTINGS)
             MenuItem.REFRESH -> controller.reload()
+            MenuItem.FIND -> onFind()
             MenuItem.VIEW_SOURCE -> onViewSource()
             MenuItem.PRINT -> controller.printPage()
             MenuItem.READ_ALOUD -> controller.toggleReadAloud()
@@ -632,6 +958,10 @@ private fun MenuPanel(
             MenuItem.SHARE -> shareUrl(context, controller.currentUrl)
             MenuItem.DARK_TOGGLE -> ThemeController.set(context, if (isDark) 1 else 2)
             MenuItem.DESKTOP_MODE -> controller.toggleDesktopMode()
+            MenuItem.SCREEN_ORIENTATION -> onScreenOrientation()
+            MenuItem.READER_MODE -> controller.toggleReaderMode()
+            MenuItem.OFFLINE_SAVE -> controller.saveCurrentPageOffline()
+            MenuItem.DOWNLOAD_IMAGES -> controller.downloadAllImages()
             MenuItem.CLEAR_CACHE -> controller.clearCacheOnly()
             MenuItem.HOME -> controller.goHome()
             MenuItem.CLOSE_TAB -> controller.tabList.firstOrNull { it.isActive }
@@ -688,13 +1018,19 @@ private fun MenuPanel(
                                     ) {
                                         Icon(
                                             menuIcon(item, isDark, controller.isSpeaking),
-                                            contentDescription = menuLabel(item, isDark, controller.isSpeaking),
+                                            contentDescription = menuLabel(
+                                                item, isDark, controller.isSpeaking,
+                                                controller.readerMode
+                                            ),
                                             tint = MaterialTheme.colorScheme.onSurface,
                                             modifier = Modifier.size(24.dp)
                                         )
                                         Spacer(Modifier.height(5.dp))
                                         Text(
-                                            menuLabel(item, isDark, controller.isSpeaking),
+                                            menuLabel(
+                                                item, isDark, controller.isSpeaking,
+                                                controller.readerMode
+                                            ),
                                             fontSize = 11.sp,
                                             maxLines = 1,
                                             textAlign = TextAlign.Center,

@@ -1,7 +1,9 @@
 package com.qingguang.browser.ui
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -13,19 +15,36 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -45,8 +64,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -62,6 +86,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.io.File
+import java.nio.charset.Charset
 
 /** 可在编辑器中打开的文本文件后缀 */
 private val TEXT_EXTENSIONS = setOf(
@@ -96,8 +121,28 @@ private fun textFiles(root: File): List<File> = root.walkTopDown()
     .sortedBy { it.relativeTo(root).path }
     .toList()
 
+private fun subDirs(root: File): List<File> = root.walkTopDown()
+    .filter { it.isDirectory && it != root }
+    .sortedBy { it.relativeTo(root).path }
+    .toList()
+
 private fun relativePath(root: File, file: File): String =
     file.relativeTo(root).path.replace(File.separatorChar, '/')
+
+/** 读取文本，优先 UTF-8，检测到乱码时回退 GBK，并返回所用编码 */
+private fun readTextSmart(file: File): Pair<String, Charset> {
+    val bytes = runCatching { file.readBytes() }.getOrDefault(ByteArray(0))
+    val utf8 = bytes.toString(Charsets.UTF_8)
+    if (utf8.contains('\uFFFD')) {
+        val gbk = runCatching { bytes.toString(Charset.forName("GBK")) }.getOrNull()
+        if (gbk != null) return gbk to Charset.forName("GBK")
+    }
+    return utf8 to Charsets.UTF_8
+}
+
+/** 文件列表按目录层级缩进，形成简单的树状视图 */
+private fun treeIndent(relative: String): String =
+    "  ".repeat(relative.count { it == '/' })
 
 /** 按文件后缀选择 CodeMirror 语法模式 */
 private fun editorMode(name: String?): String = when (name?.substringAfterLast('.', "")?.lowercase()) {
@@ -142,7 +187,23 @@ fun SourceEditorOverlay(controller: BrowserController, onClose: () -> Unit) {
     var editorWebView by remember(url) { mutableStateOf<WebView?>(null) }
     var showRename by remember { mutableStateOf(false) }
     var renameName by remember { mutableStateOf("") }
+    var renameTarget by remember { mutableStateOf<File?>(null) }
     var pendingOpen by remember { mutableStateOf<File?>(null) }
+    var charset by remember(url) { mutableStateOf(Charsets.UTF_8) }
+    var showFind by remember { mutableStateOf(false) }
+    var findQuery by remember { mutableStateOf("") }
+    var findCount by remember { mutableStateOf(-1) }
+    var showNewFile by remember { mutableStateOf(false) }
+    var newFileName by remember { mutableStateOf("") }
+    var showNewFolder by remember { mutableStateOf(false) }
+    var newFolderName by remember { mutableStateOf("") }
+    var dirs by remember(url) { mutableStateOf(target?.let { subDirs(it.root) } ?: emptyList()) }
+    var deleteTarget by remember { mutableStateOf<File?>(null) }
+    var showRelink by remember { mutableStateOf(false) }
+    var scrollTop by remember { mutableStateOf(0f) }
+    var scrollTotal by remember { mutableStateOf(0f) }
+    var scrollViewport by remember { mutableStateOf(0f) }
+    var railHeight by remember { mutableStateOf(0f) }
 
     val assetLoader = remember {
         WebViewAssetLoader.Builder()
@@ -154,6 +215,15 @@ fun SourceEditorOverlay(controller: BrowserController, onClose: () -> Unit) {
             @JavascriptInterface
             fun onDirty(value: Boolean) {
                 mainHandler.post { dirty = value }
+            }
+
+            @JavascriptInterface
+            fun onScroll(top: Float, total: Float, viewport: Float) {
+                mainHandler.post {
+                    scrollTop = top
+                    scrollTotal = total
+                    scrollViewport = viewport
+                }
             }
         }
     }
@@ -169,10 +239,11 @@ fun SourceEditorOverlay(controller: BrowserController, onClose: () -> Unit) {
         }
         scope.launch {
             loading = true
-            val content = withContext(Dispatchers.IO) {
-                runCatching { file.readText() }.getOrDefault("")
+            val loaded = withContext(Dispatchers.IO) {
+                runCatching { readTextSmart(file) }.getOrNull()
             }
-            text = content
+            text = loaded?.first ?: ""
+            charset = loaded?.second ?: Charsets.UTF_8
             current = file
             showList = false
             loading = false
@@ -193,7 +264,7 @@ fun SourceEditorOverlay(controller: BrowserController, onClose: () -> Unit) {
             }
             scope.launch {
                 val localOk = withContext(Dispatchers.IO) {
-                    runCatching { file.writeText(code); true }.getOrDefault(false)
+                    runCatching { file.writeText(code, charset); true }.getOrDefault(false)
                 }
                 if (!localOk) {
                     toast("保存失败：无法写入应用内文件")
@@ -202,7 +273,7 @@ fun SourceEditorOverlay(controller: BrowserController, onClose: () -> Unit) {
                 text = code
                 val sync = if (pageNow != null) {
                     withContext(Dispatchers.IO) {
-                        app.localSites.writeBackText(pageNow, rel, code)
+                        app.localSites.writeBackText(pageNow, rel, code, charset)
                     }
                 } else null
                 view.evaluateJavascript("window.markClean()", null)
@@ -219,10 +290,9 @@ fun SourceEditorOverlay(controller: BrowserController, onClose: () -> Unit) {
         }
     }
 
-    fun rename() {
-        val file = current ?: return
+    fun rename(file: File) {
         val root = target?.root ?: return
-        if (dirty) {
+        if (dirty && file == current) {
             toast("请先保存当前修改，再重命名文件")
             return
         }
@@ -282,9 +352,185 @@ fun SourceEditorOverlay(controller: BrowserController, onClose: () -> Unit) {
                 controller.reload()
             }
             files = textFiles(root)
+            dirs = subDirs(root)
             current = dest
             showRename = false
             toast("已重命名为：$name")
+        }
+    }
+
+    fun attachSource(uri: Uri, isTree: Boolean) {
+        val pageNow = page ?: return
+        val rootDir = target?.root ?: return
+        val file = current ?: return
+        val rel = relativePath(rootDir, file)
+        scope.launch {
+            loading = true
+            val result = withContext(Dispatchers.IO) {
+                if (isTree) {
+                    app.localSites.attachTreeSource(pageNow, uri)
+                } else {
+                    app.localSites.attachFileSource(pageNow, uri, rel)
+                }
+            }
+            app.database.localPageDao().upsert(result.page)
+            page = result.page
+            result.newEntryUrl?.let { newUrl ->
+                current = resolveLocalTarget(context, newUrl)?.file
+                controller.loadUrl(newUrl)
+            }
+            files = withContext(Dispatchers.IO) { textFiles(rootDir) }
+            dirs = withContext(Dispatchers.IO) { subDirs(rootDir) }
+            showRelink = false
+            loading = false
+            toast(result.message)
+        }
+    }
+
+    val relinkFilePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            result.data?.data?.let { attachSource(it, false) }
+        }
+    }
+    val relinkTreePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            result.data?.data?.let { attachSource(it, true) }
+        }
+    }
+
+    fun openRelinkPicker(isTree: Boolean) {
+        val intent = if (isTree) {
+            Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+        } else {
+            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+            }
+        }.apply {
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            )
+        }
+        if (isTree) relinkTreePicker.launch(intent) else relinkFilePicker.launch(intent)
+    }
+
+    fun createFile() {
+        val rootDir = target?.root ?: return
+        val name = newFileName.trim().replace('\\', '/').trim('/')
+        if (name.isBlank() || name.split('/').any { it.isBlank() || it == "." || it == ".." }) {
+            toast("文件名不合法")
+            return
+        }
+        val file = File(rootDir, name)
+        if (file.exists()) {
+            toast("同名文件已存在")
+            return
+        }
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    file.parentFile?.mkdirs()
+                    file.writeText("", Charsets.UTF_8)
+                    true
+                }.getOrDefault(false)
+            }
+            if (!ok) {
+                toast("新建文件失败")
+                return@launch
+            }
+            val pageNow = page
+            if (pageNow != null) {
+                val sync = withContext(Dispatchers.IO) {
+                    app.localSites.createTextInSource(pageNow, name, "")
+                }
+                toast(sync.message)
+            }
+            files = textFiles(rootDir)
+            dirs = subDirs(rootDir)
+            showNewFile = false
+            newFileName = ""
+            openFile(file)
+        }
+    }
+
+    fun createFolder() {
+        val rootDir = target?.root ?: return
+        val name = newFolderName.trim().replace('\\', '/').trim('/')
+        if (name.isBlank() || name.split('/').any { it.isBlank() || it == "." || it == ".." }) {
+            toast("文件夹名不合法")
+            return
+        }
+        if (File(rootDir, name).exists()) {
+            toast("同名文件或文件夹已存在")
+            return
+        }
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching { File(rootDir, name).mkdirs() }.getOrDefault(false)
+            }
+            if (!ok) {
+                toast("新建文件夹失败")
+                return@launch
+            }
+            val pageNow = page
+            if (pageNow != null) {
+                val sync = withContext(Dispatchers.IO) {
+                    app.localSites.createFolderInSource(pageNow, name)
+                }
+                toast(sync.message)
+            }
+            files = textFiles(rootDir)
+            dirs = subDirs(rootDir)
+            showNewFolder = false
+            newFolderName = ""
+        }
+    }
+
+    fun deleteFile(file: File) {
+        val rootDir = target?.root ?: return
+        scope.launch {
+            val pageNow = page
+            if (pageNow?.sourceKind == "file") {
+                toast("单文件站点不支持删除，请改为导入整个文件夹")
+                deleteTarget = null
+                return@launch
+            }
+            if (pageNow != null && pageNow.sourceUri != null) {
+                val rel = relativePath(rootDir, file)
+                val sync = withContext(Dispatchers.IO) {
+                    app.localSites.deleteInSource(pageNow, rel)
+                }
+                if (!sync.synced) {
+                    toast("未删除：${sync.message}")
+                    deleteTarget = null
+                    return@launch
+                }
+            }
+            if (!file.delete()) {
+                toast("删除应用内文件失败")
+                deleteTarget = null
+                return@launch
+            }
+            files = textFiles(rootDir)
+            dirs = subDirs(rootDir)
+            if (current?.absolutePath == file.absolutePath) {
+                val next = files.firstOrNull()
+                if (next != null) {
+                    current = null
+                    openFile(next)
+                } else {
+                    current = null
+                    showList = true
+                }
+            }
+            deleteTarget = null
+            toast("已删除")
         }
     }
 
@@ -297,12 +543,15 @@ fun SourceEditorOverlay(controller: BrowserController, onClose: () -> Unit) {
             }
             val file = target.file.takeIf { it.isFile }
             if (file != null) {
-                text = withContext(Dispatchers.IO) {
-                    runCatching { file.readText() }.getOrDefault("")
+                val loaded = withContext(Dispatchers.IO) {
+                    runCatching { readTextSmart(file) }.getOrNull()
                 }
+                text = loaded?.first ?: ""
+                charset = loaded?.second ?: Charsets.UTF_8
                 current = file
             }
             files = withContext(Dispatchers.IO) { textFiles(target.root) }
+            dirs = withContext(Dispatchers.IO) { subDirs(target.root) }
             showList = file == null
             loading = false
         } else {
@@ -376,14 +625,19 @@ fun SourceEditorOverlay(controller: BrowserController, onClose: () -> Unit) {
                     }) {
                         Text("文件", fontSize = 13.sp)
                     }
+                    if (page?.sourceUri == null) {
+                        TextButton(onClick = { showRelink = true }) {
+                            Text("关联", fontSize = 13.sp)
+                        }
+                    }
                     TextButton(
                         enabled = current != null,
                         onClick = {
-                            renameName = current?.name ?: ""
-                            showRename = true
+                            showFind = !showFind
+                            if (!showFind) findCount = -1
                         }
                     ) {
-                        Text("重命名", fontSize = 13.sp)
+                        Text("查找", fontSize = 13.sp)
                     }
                     TextButton(
                         enabled = current != null && dirty,
@@ -394,7 +648,43 @@ fun SourceEditorOverlay(controller: BrowserController, onClose: () -> Unit) {
                 }
             }
             HorizontalDivider()
-            Box(Modifier.weight(1f)) {
+            if (showFind && current != null) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = findQuery,
+                        onValueChange = {
+                            findQuery = it
+                            findCount = -1
+                        },
+                        singleLine = true,
+                        placeholder = { Text("查找内容", fontSize = 13.sp) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        enabled = findQuery.isNotBlank(),
+                        onClick = {
+                            editorWebView?.evaluateJavascript(
+                                "window.findNext(${JSONObject.quote(findQuery)}, false)"
+                            ) { raw ->
+                                findCount = raw?.trim()?.toIntOrNull() ?: -1
+                            }
+                        }
+                    ) { Text("下一个") }
+                    if (findCount >= 0) {
+                        Text("$findCount 处", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+            Box(
+                Modifier
+                    .weight(1f)
+                    .onSizeChanged { railHeight = it.height.toFloat() }
+            ) {
                 if (loading) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator()
@@ -442,31 +732,115 @@ fun SourceEditorOverlay(controller: BrowserController, onClose: () -> Unit) {
                         color = MaterialTheme.colorScheme.background
                     ) {
                         LazyColumn(Modifier.fillMaxSize()) {
+                            item {
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        "文件列表",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    TextButton(onClick = {
+                                        newFolderName = ""
+                                        showNewFolder = true
+                                    }) { Text("新建文件夹", fontSize = 13.sp) }
+                                    TextButton(onClick = {
+                                        newFileName = ""
+                                        showNewFile = true
+                                    }) { Text("新建", fontSize = 13.sp) }
+                                }
+                            }
+                            items(dirs, key = { "d-" + it.absolutePath }) { dir ->
+                                val rel = relativePath(target.root, dir)
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Folder,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        treeIndent(rel) + dir.name,
+                                        fontSize = 13.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        "文件夹",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(end = 8.dp)
+                                    )
+                                }
+                            }
                             items(files, key = { it.absolutePath }) { file ->
+                                val rel = relativePath(target.root, file)
                                 Row(
                                     Modifier
                                         .fillMaxWidth()
                                         .clickable { openFile(file) }
-                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                        .padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(
-                                        relativePath(target.root, file),
-                                        fontSize = 13.sp,
-                                        color = if (file == current) {
-                                            MaterialTheme.colorScheme.secondary
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurface
-                                        },
-                                        modifier = Modifier.weight(1f),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            treeIndent(rel) + file.name,
+                                            fontSize = 13.sp,
+                                            color = if (file == current) {
+                                                MaterialTheme.colorScheme.secondary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface
+                                            },
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        val parent = rel.substringBeforeLast('/', "")
+                                        if (parent.isNotBlank()) {
+                                            Text(
+                                                parent,
+                                                fontSize = 10.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
                                     Text(
                                         "${file.length()} B",
                                         fontSize = 11.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
+                                    IconButton(onClick = {
+                                        renameTarget = file
+                                        renameName = file.name
+                                        showRename = true
+                                    }) {
+                                        Icon(
+                                            Icons.Filled.Edit,
+                                            contentDescription = "重命名",
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                    IconButton(onClick = { deleteTarget = file }) {
+                                        Icon(
+                                            Icons.Filled.Delete,
+                                            contentDescription = "删除",
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
                                 }
                             }
                             if (files.isEmpty()) {
@@ -479,7 +853,62 @@ fun SourceEditorOverlay(controller: BrowserController, onClose: () -> Unit) {
                                     )
                                 }
                             }
+                            if (files.size <= 1 && page?.sourceKind != "tree") {
+                                item {
+                                    Text(
+                                        "该网页是单文件导入，只能编辑入口文件；子网页源码需要把整个网站以「文件夹」方式导入后才能查看和修改。",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(16.dp)
+                                    )
+                                }
+                            }
                         }
+                    }
+                }
+                if (!showList && !loading && current != null &&
+                    scrollTotal > scrollViewport + 1f && railHeight > 0f
+                ) {
+                    val density = LocalDensity.current
+                    val thumbPx = (railHeight * scrollViewport / scrollTotal)
+                        .coerceIn(with(density) { 28.dp.toPx() }, railHeight)
+                    val maxTravel = (railHeight - thumbPx).coerceAtLeast(1f)
+                    val ratio = (scrollTop / (scrollTotal - scrollViewport).coerceAtLeast(1f))
+                        .coerceIn(0f, 1f)
+                    fun seek(y: Float) {
+                        val seekRatio = ((y - thumbPx / 2f) / maxTravel).coerceIn(0f, 1f)
+                        editorWebView?.evaluateJavascript("window.scrollToRatio($seekRatio)", null)
+                    }
+                    Box(
+                        Modifier
+                            .align(Alignment.CenterEnd)
+                            .fillMaxHeight()
+                            .width(18.dp)
+                            .onSizeChanged { railHeight = it.height.toFloat() }
+                            .pointerInput(scrollTotal, scrollViewport, railHeight) {
+                                detectTapGestures { offset -> seek(offset.y) }
+                            }
+                            .pointerInput(scrollTotal, scrollViewport, railHeight) {
+                                detectVerticalDragGestures { change, _ -> seek(change.position.y) }
+                            }
+                    ) {
+                        Box(
+                            Modifier
+                                .align(Alignment.CenterEnd)
+                                .width(3.dp)
+                                .fillMaxHeight()
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f))
+                        )
+                        Box(
+                            Modifier
+                                .align(Alignment.TopEnd)
+                                .offset { IntOffset(0, (ratio * maxTravel).toInt()) }
+                                .width(7.dp)
+                                .height(with(density) { thumbPx.toDp() })
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f))
+                        )
                     }
                 }
             }
@@ -488,7 +917,10 @@ fun SourceEditorOverlay(controller: BrowserController, onClose: () -> Unit) {
 
     if (showRename) {
         AlertDialog(
-            onDismissRequest = { showRename = false },
+            onDismissRequest = {
+                showRename = false
+                renameTarget = null
+            },
             title = { Text("重命名文件") },
             text = {
                 Column {
@@ -509,12 +941,124 @@ fun SourceEditorOverlay(controller: BrowserController, onClose: () -> Unit) {
             },
             confirmButton = {
                 TextButton(
-                    onClick = { rename() },
-                    enabled = renameName.isNotBlank()
+                    onClick = { renameTarget?.let { rename(it) } },
+                    enabled = renameName.isNotBlank() && renameTarget != null
                 ) { Text("确定") }
             },
             dismissButton = {
-                TextButton(onClick = { showRename = false }) { Text("取消") }
+                TextButton(onClick = {
+                    showRename = false
+                    renameTarget = null
+                }) { Text("取消") }
+            }
+        )
+    }
+
+    if (showNewFolder) {
+        AlertDialog(
+            onDismissRequest = { showNewFolder = false },
+            title = { Text("新建文件夹") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = newFolderName,
+                        onValueChange = { newFolderName = it },
+                        singleLine = true,
+                        label = { Text("文件夹名") },
+                        placeholder = { Text("例如 assets/images") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "已关联原文件夹时，会同时在手机原文件夹中创建",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { createFolder() },
+                    enabled = newFolderName.isNotBlank()
+                ) { Text("创建") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNewFolder = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (showNewFile) {
+        AlertDialog(
+            onDismissRequest = { showNewFile = false },
+            title = { Text("新建文件") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = newFileName,
+                        onValueChange = { newFileName = it },
+                        singleLine = true,
+                        label = { Text("文件名") },
+                        placeholder = { Text("例如 style.css") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "已关联原文件夹时，会同时在手机原文件夹中创建",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { createFile() },
+                    enabled = newFileName.isNotBlank()
+                ) { Text("创建") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNewFile = false }) { Text("取消") }
+            }
+        )
+    }
+
+    deleteTarget?.let { file ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("删除文件？") },
+            text = { Text("将删除「${file.name}」；已关联原文件夹时会同步删除手机原文件。") },
+            confirmButton = {
+                TextButton(onClick = { deleteFile(file) }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text("取消") }
+            }
+        )
+    }
+
+    if (showRelink) {
+        AlertDialog(
+            onDismissRequest = { showRelink = false },
+            title = { Text("关联手机原文件") },
+            text = {
+                Column {
+                    Text(
+                        "此站点是在同步功能上线前导入的，目前只有应用内副本。重新选择原文件或原文件夹后，保存和重命名会同步到手机原文件。",
+                        fontSize = 13.sp
+                    )
+                    TextButton(
+                        onClick = { openRelinkPicker(false) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("选择原始网页文件", fontSize = 14.sp) }
+                    TextButton(
+                        onClick = { openRelinkPicker(true) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("选择原始文件夹", fontSize = 14.sp) }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showRelink = false }) { Text("取消") }
             }
         )
     }
