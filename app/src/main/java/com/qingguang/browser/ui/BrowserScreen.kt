@@ -908,6 +908,7 @@ private fun menuIcon(
     MenuItem.OFFLINE_LIST -> Icons.Filled.FolderOpen
     MenuItem.PERMISSION_CENTER -> Icons.Filled.Lock
     MenuItem.AUDIT_LOG -> Icons.Filled.Description
+    MenuItem.SITE_DATA_EXPORT -> Icons.Filled.SaveAlt
     MenuItem.AD_BLOCK -> Icons.Filled.Block
     MenuItem.INCOGNITO -> if (incognito) Icons.Filled.VisibilityOff else Icons.Filled.Visibility
     MenuItem.CLEAR_CACHE -> Icons.Filled.Delete
@@ -982,6 +983,7 @@ private fun MenuPanel(
             MenuItem.OFFLINE_LIST -> onOpenOverlay(OverlayPage.OFFLINE_PAGES)
             MenuItem.PERMISSION_CENTER -> onOpenOverlay(OverlayPage.PERMISSION_CENTER)
             MenuItem.AUDIT_LOG -> onOpenOverlay(OverlayPage.AUDIT_LOG)
+            MenuItem.SITE_DATA_EXPORT -> controller.exportSiteData()
             MenuItem.AD_BLOCK -> {
                 app.settings.adBlock = !app.settings.adBlock
                 controller.applySettings()

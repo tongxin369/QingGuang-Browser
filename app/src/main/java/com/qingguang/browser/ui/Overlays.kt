@@ -18,6 +18,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -191,6 +192,8 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
     var sortMode by remember { mutableStateOf(false) }
     var dragId by remember { mutableStateOf<Long?>(null) }
     var dragOffset by remember { mutableStateOf(0f) }
+    var autoScroll by remember { mutableStateOf(0f) }
+    val bookmarkListState = androidx.compose.foundation.lazy.rememberLazyListState()
     val density = androidx.compose.ui.platform.LocalDensity.current
     val rowHeightPx = with(density) { 66.dp.toPx() }
 
@@ -311,9 +314,10 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
     val shownFolders = if (selecting || sortMode) emptyList() else visibleFolders
 
     fun finishReorder(fromIndex: Int) {
-        val moved = (dragOffset / rowHeightPx).roundToInt()
+        val moved = ((dragOffset + autoScroll) / rowHeightPx).roundToInt()
         dragId = null
         dragOffset = 0f
+        autoScroll = 0f
         if (moved == 0) return
         val list = visibleBookmarks.toMutableList()
         if (fromIndex !in list.indices) return
@@ -504,7 +508,10 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                     else "这个文件夹还是空的，点右上角可以新建子文件夹。"
                 )
             } else {
-                LazyColumn(Modifier.fillMaxSize()) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    state = bookmarkListState
+                ) {
                     items(shownFolders, key = { "f-${it.id}" }) { folder ->
                         BookmarkFolderRow(
                             folder = folder,
@@ -520,7 +527,7 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                                 .offset {
                                     IntOffset(
                                         0,
-                                        if (dragging) dragOffset.roundToInt() else 0
+                                        if (dragging) (dragOffset + autoScroll).roundToInt() else 0
                                     )
                                 }
                                 .zIndex(if (dragging) 1f else 0f)
@@ -537,15 +544,32 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                                             onDragStart = {
                                                 dragId = bookmark.id
                                                 dragOffset = 0f
+                                                autoScroll = 0f
                                             },
                                             onDrag = { change, amount ->
                                                 change.consume()
                                                 dragOffset += amount.y
+                                                // 靠近列表上下边缘时自动滚动，拖到很远也能继续移动
+                                                val viewport = bookmarkListState.layoutInfo.viewportSize.height
+                                                if (viewport > 0) {
+                                                    val edge = with(density) { 72.dp.toPx() }
+                                                    val step = when {
+                                                        change.position.y < edge -> -18f
+                                                        change.position.y > viewport - edge -> 18f
+                                                        else -> 0f
+                                                    }
+                                                    if (step != 0f) {
+                                                        scope.launch {
+                                                            autoScroll += bookmarkListState.scrollBy(step)
+                                                        }
+                                                    }
+                                                }
                                             },
                                             onDragEnd = { finishReorder(index) },
                                             onDragCancel = {
                                                 dragId = null
                                                 dragOffset = 0f
+                                                autoScroll = 0f
                                             }
                                         )
                                     } else Modifier

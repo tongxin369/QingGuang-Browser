@@ -1151,6 +1151,16 @@ class BrowserController(private val activity: Activity) {
         }
 
         @JavascriptInterface
+        fun saveText(name: String?, mime: String?, text: String?) {
+            if (text.isNullOrBlank()) return
+            val fileName = name?.takeIf { it.isNotBlank() } ?: "站点数据.json"
+            val bytes = text.toByteArray(Charsets.UTF_8)
+            activity.runOnUiThread {
+                saveDownloadedBytes(fileName, mime ?: "application/json", bytes, "site-data")
+            }
+        }
+
+        @JavascriptInterface
         fun fail(message: String?) {
             activity.runOnUiThread { toast("下载失败：${message ?: "读取数据失败"}") }
         }
@@ -1181,6 +1191,22 @@ class BrowserController(private val activity: Activity) {
             return
         }
         app.backups.backupSite(tab.webView, url, tab.webView.title ?: url, callback)
+    }
+
+    /** 导出当前站点的 localStorage 与 IndexedDB 为 JSON，保存到下载目录 */
+    fun exportSiteData() {
+        val tab = currentTab() ?: run {
+            toast("当前没有打开的页面")
+            return
+        }
+        val url = tab.webView.url
+        if (url.isNullOrBlank() || url.startsWith("about:") || !url.startsWith("http")) {
+            toast("当前页面不支持导出站点数据")
+            return
+        }
+        toast("正在导出站点数据…")
+        audit("站点数据", "导出", hostOf(url), url)
+        tab.webView.evaluateJavascript(SITE_DATA_EXPORT_JS, null)
     }
 
     /** 从备份恢复当前页面 */
@@ -1560,7 +1586,63 @@ class BrowserController(private val activity: Activity) {
             "css", "js", "woff", "woff2", "ttf", "otf"
         )
 
-        /** 夜间网页：整体反色再反色图片，得到近似深色主题 */
+        /** 导出站点数据：localStorage + 全部 IndexedDB（含库结构、索引与记录） */
+        private val SITE_DATA_EXPORT_JS = """
+            (function(){
+              var result={url:location.href,host:location.hostname,time:Date.now(),localStorage:{},indexedDB:[]};
+              try{
+                for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);result.localStorage[k]=localStorage.getItem(k);}
+              }catch(e){}
+              function readStore(db,storeName){
+                return new Promise(function(resolve){
+                  var info={name:storeName,keyPath:null,autoIncrement:false,indexes:[],records:[]};
+                  try{
+                    var tx=db.transaction(storeName,'readonly');
+                    var store=tx.objectStore(storeName);
+                    info.keyPath=store.keyPath||null;
+                    info.autoIncrement=!!store.autoIncrement;
+                    for(var i=0;i<store.indexNames.length;i++){
+                      var ix=store.index(store.indexNames[i]);
+                      info.indexes.push({name:ix.name,keyPath:ix.keyPath||null,unique:!!ix.unique,multiEntry:!!ix.multiEntry});
+                    }
+                    var req=store.getAll();
+                    req.onsuccess=function(){info.records=req.result||[];resolve(info);};
+                    req.onerror=function(){resolve(info);};
+                  }catch(e){resolve(null);}
+                });
+              }
+              function readDB(item){
+                return new Promise(function(resolve){
+                  var req;
+                  try{req=indexedDB.open(item.name);}catch(e){resolve(null);return;}
+                  req.onerror=function(){resolve(null);};
+                  req.onsuccess=function(){
+                    var db=req.result;
+                    var stores=Array.prototype.slice.call(db.objectStoreNames);
+                    var out={name:db.name,version:db.version,stores:[]};
+                    if(!stores.length){db.close();resolve(out);return;}
+                    Promise.all(stores.map(function(s){return readStore(db,s);})).then(function(list){
+                      out.stores=list.filter(Boolean);
+                      db.close();
+                      resolve(out);
+                    }).catch(function(){db.close();resolve(out);});
+                  };
+                });
+              }
+              var dbs=(indexedDB.databases?indexedDB.databases():Promise.resolve([]));
+              dbs.then(function(list){
+                return Promise.all((list||[]).map(readDB));
+              }).then(function(all){
+                result.indexedDB=(all||[]).filter(Boolean);
+                var stamp=new Date().toISOString().replace(/[:.]/g,'-');
+                var host=location.hostname||'site';
+                QingGuangDownload.saveText('站点数据-'+host+'-'+stamp+'.json','application/json',JSON.stringify(result));
+              }).catch(function(e){
+                QingGuangDownload.fail(String(e));
+              });
+            })();
+        """.trimIndent()
+
         private val NIGHT_CSS_JS = """
             (function(){
               if (document.getElementById('qg-night')) return;
