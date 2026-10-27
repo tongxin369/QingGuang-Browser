@@ -63,6 +63,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -191,6 +192,37 @@ fun HomePage(
     suspend fun firstEmptySlot(page: Int): Int? {
         val used = app.database.homeItemDao().slotsOnPage(page).toSet()
         return (0 until homePageCapacity(page)).firstOrNull { it !in used }
+    }
+
+    // 旧版容量为 16/24/32，统一为每页 20 后把超出范围的图标顺移到后续页，避免图标“消失”
+    LaunchedEffect(homeItems, totalPages) {
+        val capacity = HOME_PAGE_CAPACITY
+        val overflow = rootItems.filter {
+            it.page !in 0 until totalPages || it.slot !in 0 until capacity
+        }
+        if (overflow.isEmpty()) return@LaunchedEffect
+        val dao = app.database.homeItemDao()
+        overflow.sortedWith(compareBy({ it.page }, { it.slot }, { it.id })).forEach { item ->
+            var targetPage = -1
+            var targetSlot = -1
+            for (page in 0 until totalPages) {
+                val used = dao.slotsOnPage(page).toSet()
+                val free = (0 until capacity).firstOrNull { it !in used }
+                if (free != null) {
+                    targetPage = page
+                    targetSlot = free
+                    break
+                }
+            }
+            if (targetPage < 0 && totalPages < 99) {
+                app.settings.homePageCount = totalPages + 1
+                targetPage = totalPages
+                targetSlot = 0
+            }
+            if (targetPage >= 0) {
+                dao.place(item.id, targetPage, targetSlot, item.sortOrder)
+            }
+        }
     }
 
     fun mergeItems(dragged: HomeItem, target: HomeItem, parentId: Long, page: Int) {
