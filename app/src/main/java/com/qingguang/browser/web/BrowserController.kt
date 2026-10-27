@@ -504,13 +504,13 @@ class BrowserController(private val activity: Activity) {
                 // 提前接管 URL.createObjectURL，缓存网页生成的 Blob，避免导出下载时 fetch 被 CSP 拦截
                 view.evaluateJavascript(BLOB_STORE_JS, null)
                 // 夜间调色尽早注入，减少首屏白闪与延迟感
-                if (nightInvertEnabled()) {
-                    view.setBackgroundColor(0xFF101214.toInt())
-                    view.evaluateJavascript(NIGHT_CSS_JS, null)
-                } else {
-                    view.setBackgroundColor(0x00000000)
-                }
+                injectNightCss(view)
                 refresh()
+            }
+
+            override fun onPageCommitVisible(view: WebView, url: String?) {
+                // 页面内容即将可见时再注入一次：比 onPageFinished 更早，明显减少暗色延迟
+                if (view === currentTab()?.webView) injectNightCss(view)
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
@@ -527,7 +527,7 @@ class BrowserController(private val activity: Activity) {
                         view.evaluateJavascript(AD_HIDE_JS, null)
                     }
                     if (nightInvertEnabled()) {
-                        view.evaluateJavascript(NIGHT_CSS_JS, null)
+                        injectNightCss(view)
                     }
                     // 页面加载完成后自动备份一次，降低"交互后直接退出"导致的数据丢失风险
                     if (app.settings.autoBackup && !app.settings.incognito &&
@@ -636,6 +636,16 @@ class BrowserController(private val activity: Activity) {
     fun nightInvertEnabled(): Boolean = when (app.settings.appTheme) {
         1 -> false
         else -> isSystemDark()
+    }
+
+    /** 夜间调色：先铺深色底，再尽早注入样式，减少白闪与延迟 */
+    private fun injectNightCss(view: WebView) {
+        if (nightInvertEnabled()) {
+            view.setBackgroundColor(0xFF101214.toInt())
+            view.evaluateJavascript(NIGHT_CSS_JS, null)
+        } else {
+            view.setBackgroundColor(0x00000000)
+        }
     }
 
     /** 主题模式切换后重新应用并刷新网页 */
@@ -1677,11 +1687,24 @@ class BrowserController(private val activity: Activity) {
         private val NIGHT_CSS_JS = """
             (function(){
               if (document.getElementById('qg-night')) return;
-              var s = document.createElement('style');
-              s.id = 'qg-night';
-              s.textContent = 'html{filter:invert(1) hue-rotate(180deg);background:#111!important}' +
-                'img,video,canvas,svg,picture{filter:invert(1) hue-rotate(180deg)!important}';
-              document.documentElement.appendChild(s);
+              try {
+                var root = document.documentElement;
+                var body = document.body || root;
+                var bg = getComputedStyle(body).backgroundColor || '';
+                var m = bg.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+                var light = true;
+                if (m) {
+                  var lum = (0.299 * (+m[1]) + 0.587 * (+m[2]) + 0.114 * (+m[3])) / 255;
+                  light = lum > 0.55;
+                }
+                var s = document.createElement('style');
+                s.id = 'qg-night';
+                s.textContent = light
+                  ? 'html{filter:invert(1) hue-rotate(180deg);background:#101214!important}' +
+                    'img,video,canvas,svg,picture{filter:invert(1) hue-rotate(180deg)!important}'
+                  : 'html{color-scheme:dark;background:#101214!important}';
+                root.appendChild(s);
+              } catch (e) {}
             })();
         """.trimIndent()
 

@@ -42,6 +42,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -2447,14 +2448,47 @@ private fun PermissionCenterPage(controller: BrowserController) {
     var showAdd by remember { mutableStateOf(false) }
     var newHost by remember { mutableStateOf("") }
     val currentHost = hostOfText(controller.currentUrl)
+    val currentPolicy = remember(refreshKey, currentHost) {
+        if (currentHost.isBlank()) null
+        else SitePermissionStore.policyFor(app.settings, currentHost)
+    }
 
     Column(Modifier.fillMaxSize()) {
         Text(
-            "未列出的站点默认全部允许，浏览器不会静默拦截。点击站点即可逐项开关；修改后下次加载网页生效。",
+            "新站点首次访问默认全部允许，不弹窗、不打扰；需要时可在下方逐站自定义。",
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
         )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    if (currentHost.isBlank()) "当前没有打开网页" else "当前站点：$currentHost",
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                currentPolicy?.let {
+                    Text(
+                        it.summary(),
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (currentPolicy != null) {
+                OutlinedButton(
+                    onClick = { editing = currentPolicy },
+                    modifier = Modifier.height(36.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp)
+                ) { Text("配置", fontSize = 13.sp) }
+            }
+        }
         Row(
             Modifier
                 .fillMaxWidth()
@@ -2466,11 +2500,13 @@ private fun PermissionCenterPage(controller: BrowserController) {
                 showAdd = true
             }) { Text("添加站点") }
             Spacer(Modifier.width(10.dp))
-            if (currentHost.isNotBlank()) {
+            if (currentHost.isNotBlank() && currentPolicy != null &&
+                permissions.none { it.host == currentHost }
+            ) {
                 TextButton(onClick = {
-                    SitePermissionStore.upsert(app.settings, SitePermission(host = currentHost))
+                    SitePermissionStore.upsert(app.settings, currentPolicy)
                     refreshKey++
-                }) { Text("添加当前站点") }
+                }) { Text("保存当前站点") }
             }
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -2613,6 +2649,50 @@ private fun AuditLogPage() {
     val logs by app.database.auditLogDao()
         .observeAll()
         .collectAsStateWithLifecycle(initialValue = emptyList())
+    var typeFilter by remember { mutableStateOf("全部") }
+    var keyword by remember { mutableStateOf("") }
+    var exportHint by remember { mutableStateOf<String?>(null) }
+
+    val filtered = logs.filter { log ->
+        val typeOk = when (typeFilter) {
+            "权限" -> log.action in setOf("定位", "摄像头/麦克风", "弹窗", "脚本", "图片")
+            "下载" -> log.action == "下载"
+            "站点数据" -> log.action == "站点数据"
+            else -> true
+        }
+        val key = keyword.trim()
+        val keyOk = key.isBlank() || log.host.contains(key, ignoreCase = true) ||
+            log.detail.contains(key, ignoreCase = true)
+        typeOk && keyOk
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri ->
+        if (uri != null) {
+            val timeFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+            val csv = buildString {
+                append('\uFEFF')
+                append("时间,类型,结果,站点,详情\r\n")
+                filtered.forEach { log ->
+                    append(csvCell(timeFormat.format(Date(log.createdAt))))
+                    append(',').append(csvCell(log.action))
+                    append(',').append(csvCell(log.result))
+                    append(',').append(csvCell(log.host))
+                    append(',').append(csvCell(log.detail))
+                    append("\r\n")
+                }
+            }
+            exportHint = runCatching {
+                context.contentResolver.openOutputStream(uri)?.use {
+                    it.write(csv.toByteArray(Charsets.UTF_8))
+                } ?: error("无法写入")
+            }.fold(
+                onSuccess = { "已导出 ${filtered.size} 条操作记录" },
+                onFailure = { "导出失败：${it.message}" }
+            )
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -2622,27 +2702,73 @@ private fun AuditLogPage() {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                "共 ${logs.size} 条；无痕模式下的操作不记录",
+                "共 ${filtered.size} 条；无痕模式下的操作不记录",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f)
             )
+            TextButton(
+                onClick = {
+                    exportLauncher.launch(
+                        "操作记录-" + SimpleDateFormat("yyyyMMdd-HHmm", Locale.getDefault())
+                            .format(Date()) + ".csv"
+                    )
+                }
+            ) { Text("导出") }
             TextButton(onClick = {
                 scope.launch { app.database.auditLogDao().clearAll() }
             }) { Text("清空") }
         }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 18.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf("全部", "权限", "下载", "站点数据").forEach { type ->
+                FilterChip(
+                    selected = typeFilter == type,
+                    onClick = { typeFilter = type },
+                    label = { Text(type, fontSize = 12.sp) }
+                )
+            }
+        }
+        OutlinedTextField(
+            value = keyword,
+            onValueChange = { keyword = it },
+            placeholder = { Text("按站点或详情筛选", fontSize = 12.sp) },
+            singleLine = true,
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 4.dp)
+        )
+        exportHint?.let {
+            Text(
+                it,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp)
+            )
+        }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        if (logs.isEmpty()) {
-            EmptyHint("暂无操作记录。")
+        if (filtered.isEmpty()) {
+            EmptyHint(if (logs.isEmpty()) "暂无操作记录。" else "没有符合筛选条件的记录。")
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
-                items(logs, key = { it.id }) { log ->
+                items(filtered, key = { it.id }) { log ->
                     AuditLogRow(log)
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
             }
         }
     }
+}
+
+private fun csvCell(value: String): String {
+    val text = value.replace("\"", "\"\"")
+    return "\"$text\""
 }
 
 @Composable
