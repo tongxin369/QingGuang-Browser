@@ -77,6 +77,21 @@ data class OfflinePage(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+/** 操作审计日志：权限放行/拦截、下载、弹窗等关键动作，全部记录便于回溯 */
+@Entity(tableName = "audit_logs")
+data class AuditLog(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    /** 动作类型：定位 / 摄像头 / 弹窗 / 下载 / 脚本 / 图片 等 */
+    val action: String,
+    /** 站点域名；为空表示全局动作 */
+    val host: String = "",
+    /** 结果：允许 / 拒绝 / 拦截 / 完成 */
+    val result: String,
+    /** 说明文字 */
+    val detail: String = "",
+    val createdAt: Long = System.currentTimeMillis()
+)
+
 @Entity(tableName = "downloads")
 data class DownloadRecord(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,

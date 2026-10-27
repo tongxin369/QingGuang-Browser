@@ -330,6 +330,8 @@ private fun BrowsingSettings(controller: BrowserController) {
     var customEngine by remember { mutableStateOf(app.settings.searchEngine) }
     var readerSize by remember { mutableStateOf(app.settings.readerFontSize) }
     var readerLine by remember { mutableStateOf(app.settings.readerLinePercent) }
+    var nightWeb by remember { mutableStateOf(app.settings.nightWeb) }
+    var adExtra by remember { mutableStateOf(app.settings.adBlockExtraHosts) }
 
     SettingsGroup("搜索引擎")
     engines.forEach { (name, url) ->
@@ -402,6 +404,11 @@ private fun BrowsingSettings(controller: BrowserController) {
         desktop = value
         if (app.settings.desktopMode != value) controller.toggleDesktopMode()
     }
+    SettingsSwitchRow("夜间网页调色（强制深色）", nightWeb) { value ->
+        nightWeb = value
+        app.settings.nightWeb = value
+        controller.reload()
+    }
 
     SettingsGroup("屏幕方向")
     Row(
@@ -465,6 +472,19 @@ private fun BrowsingSettings(controller: BrowserController) {
         app.settings.adBlock = value
         controller.applySettings()
     }
+    OutlinedTextField(
+        value = adExtra,
+        onValueChange = {
+            adExtra = it
+            app.settings.adBlockExtraHosts = it
+        },
+        label = { Text("自定义拦截域名（每行一个，可留空）") },
+        placeholder = { Text("ads.example.com") },
+        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 6.dp)
+    )
 
     if (showCustomEngine) {
         AlertDialog(
@@ -650,7 +670,7 @@ private fun HomeSettings() {
         }
     }
     Text(
-        "最少 2 页，可一直增加到 99 页；第一页 16 个、第二页 24 个、第三页起每页 32 个。减少页数不会删除图标，超出页数的图标会暂时隐藏。",
+        "最少 2 页，可一直增加到 99 页；每页统一 4 列 × 5 行 = 20 个图标。减少页数不会删除图标，超出页数的图标会暂时隐藏。",
         fontSize = 11.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)

@@ -10,9 +10,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 @Database(
     entities = [
         Bookmark::class, BookmarkFolder::class, HomeItem::class, HistoryItem::class,
-        LocalPage::class, DownloadRecord::class, OfflinePage::class
+        LocalPage::class, DownloadRecord::class, OfflinePage::class, AuditLog::class
     ],
-    version = 10,
+    version = 11,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -23,6 +23,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun localPageDao(): LocalPageDao
     abstract fun downloadDao(): DownloadDao
     abstract fun offlinePageDao(): OfflinePageDao
+    abstract fun auditLogDao(): AuditLogDao
 
     companion object {
         @Volatile
@@ -37,9 +38,24 @@ abstract class AppDatabase : RoomDatabase() {
                 ).addMigrations(
                     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                     MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
-                    MIGRATION_9_10
+                    MIGRATION_9_10, MIGRATION_10_11
                 ).build().also { instance = it }
             }
+
+        /** v11：新增操作审计日志 */
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `audit_logs` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`action` TEXT NOT NULL, " +
+                        "`host` TEXT NOT NULL, " +
+                        "`result` TEXT NOT NULL, " +
+                        "`detail` TEXT NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL)"
+                )
+            }
+        }
 
         /** v10：新增离线网页包记录 */
         private val MIGRATION_9_10 = object : Migration(9, 10) {

@@ -15,9 +15,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.ui.unit.IntOffset
@@ -96,12 +97,19 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.qingguang.browser.App
 import com.qingguang.browser.BuildConfig
+import com.qingguang.browser.data.AuditLog
+import com.qingguang.browser.data.HomeItem
 import com.qingguang.browser.ui.theme.ThemeController
 import com.qingguang.browser.util.BackupInfo
 import com.qingguang.browser.util.BackupManager
+import com.qingguang.browser.util.SitePermission
+import com.qingguang.browser.util.SitePermissionStore
 import com.qingguang.browser.web.BrowserController
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun OverlayPageHost(
@@ -135,6 +143,8 @@ fun OverlayPageHost(
                 OverlayPage.OFFLINE_PAGES -> OfflinePagesPage(controller, onClose)
                 OverlayPage.DATA_BACKUPS -> BackupsPage(controller)
                 OverlayPage.SETTINGS -> SettingsPage(controller)
+                OverlayPage.PERMISSION_CENTER -> PermissionCenterPage(controller)
+                OverlayPage.AUDIT_LOG -> AuditLogPage()
             }
         }
     }
@@ -413,6 +423,51 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                     selectedIds.clear()
                     selectedIds.addAll(visibleBookmarks.map { it.id })
                 }) { Text("全选") }
+                TextButton(onClick = {
+                    val targets = bookmarks.filter { it.id in selectedIds }
+                    if (targets.isEmpty()) return@TextButton
+                    scope.launch {
+                        val dao = app.database.homeItemDao()
+                        val all = dao.all()
+                        val existing = all.filter { it.parentId == 0L }
+                            .map { it.url }.toMutableSet()
+                        val used = (0 until app.settings.homePageCount).associateWith { pg ->
+                            all.filter { it.parentId == 0L && it.page == pg }
+                                .map { it.slot }.toMutableSet()
+                        }.toMutableMap()
+                        var added = 0
+                        targets.forEach { bookmark ->
+                            if (bookmark.url in existing) return@forEach
+                            var targetPage = -1
+                            var targetSlot = -1
+                            for (pg in 0 until app.settings.homePageCount) {
+                                val slot = (0 until homePageCapacity(pg)).firstOrNull {
+                                    it !in (used[pg] ?: mutableSetOf())
+                                }
+                                if (slot != null) {
+                                    targetPage = pg
+                                    targetSlot = slot
+                                    break
+                                }
+                            }
+                            if (targetPage >= 0) {
+                                dao.insert(
+                                    HomeItem(
+                                        title = bookmark.title,
+                                        url = bookmark.url,
+                                        page = targetPage,
+                                        slot = targetSlot
+                                    )
+                                )
+                                used[targetPage]?.add(targetSlot)
+                                existing.add(bookmark.url)
+                                added++
+                            }
+                        }
+                        message = if (added > 0) "已添加 $added 个书签到首页快捷入口"
+                        else "首页快捷入口已满，或这些书签已在首页"
+                    }
+                }) { Text("添加到首页") }
             }
         }
         message?.let {
@@ -469,16 +524,23 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                                     )
                                 }
                                 .zIndex(if (dragging) 1f else 0f)
+                                .graphicsLayer {
+                                    if (dragging) {
+                                        scaleX = 1.03f
+                                        scaleY = 1.03f
+                                        shadowElevation = 12f
+                                    }
+                                }
                                 .then(
                                     if (sortMode) Modifier.pointerInput(bookmark.id) {
-                                        detectVerticalDragGestures(
+                                        detectDragGesturesAfterLongPress(
                                             onDragStart = {
                                                 dragId = bookmark.id
                                                 dragOffset = 0f
                                             },
-                                            onVerticalDrag = { change, amount ->
+                                            onDrag = { change, amount ->
                                                 change.consume()
-                                                dragOffset += amount
+                                                dragOffset += amount.y
                                             },
                                             onDragEnd = { finishReorder(index) },
                                             onDragCancel = {
@@ -2301,6 +2363,273 @@ private fun EmptyHint(text: String) {
             modifier = Modifier.padding(32.dp)
         )
     }
+}
+
+/** 权限中心：每个站点一份权限矩阵，浏览器不替用户做决定 */
+@Composable
+private fun PermissionCenterPage(controller: BrowserController) {
+    val context = LocalContext.current
+    val app = context.applicationContext as App
+    var refreshKey by remember { mutableStateOf(0) }
+    val permissions = remember(refreshKey) { SitePermissionStore.load(app.settings) }
+    var editing by remember { mutableStateOf<SitePermission?>(null) }
+    var showAdd by remember { mutableStateOf(false) }
+    var newHost by remember { mutableStateOf("") }
+    val currentHost = hostOfText(controller.currentUrl)
+
+    Column(Modifier.fillMaxSize()) {
+        Text(
+            "未列出的站点默认全部允许，浏览器不会静默拦截。点击站点即可逐项开关；修改后下次加载网页生效。",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedButton(onClick = {
+                newHost = currentHost
+                showAdd = true
+            }) { Text("添加站点") }
+            Spacer(Modifier.width(10.dp))
+            if (currentHost.isNotBlank()) {
+                TextButton(onClick = {
+                    SitePermissionStore.upsert(app.settings, SitePermission(host = currentHost))
+                    refreshKey++
+                }) { Text("添加当前站点") }
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        if (permissions.isEmpty()) {
+            EmptyHint("还没有单独配置的站点。\n新增后，可分别关闭定位、摄像头、弹窗、下载、脚本或图片。")
+        } else {
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(permissions, key = { it.host }) { permission ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { editing = permission }
+                            .padding(horizontal = 18.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                permission.host,
+                                fontSize = 15.sp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                permission.summary(),
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(onClick = {
+                            SitePermissionStore.remove(app.settings, permission.host)
+                            refreshKey++
+                        }) { Text("移除") }
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
+        }
+    }
+
+    if (showAdd) {
+        AlertDialog(
+            onDismissRequest = { showAdd = false },
+            title = { Text("添加站点") },
+            text = {
+                Column {
+                    Text("填写域名，例如 example.com", fontSize = 12.sp)
+                    OutlinedTextField(
+                        value = newHost,
+                        onValueChange = { newHost = it },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val host = hostOfText(newHost)
+                        if (host.isBlank()) {
+                            Toast.makeText(context, "请填写域名", Toast.LENGTH_SHORT).show()
+                        } else {
+                            SitePermissionStore.upsert(app.settings, SitePermission(host = host))
+                            refreshKey++
+                            showAdd = false
+                        }
+                    }
+                ) { Text("添加") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAdd = false }) { Text("取消") }
+            }
+        )
+    }
+
+    editing?.let { origin ->
+        var draft by remember(origin) { mutableStateOf(origin) }
+        AlertDialog(
+            onDismissRequest = { editing = null },
+            title = { Text(origin.host, fontSize = 16.sp) },
+            text = {
+                Column {
+                    PermissionSwitch("定位", draft.allowGeo) { draft = draft.copy(allowGeo = it) }
+                    PermissionSwitch("摄像头 / 麦克风", draft.allowCamera) {
+                        draft = draft.copy(allowCamera = it)
+                    }
+                    PermissionSwitch("网页弹窗", draft.allowPopup) { draft = draft.copy(allowPopup = it) }
+                    PermissionSwitch("下载文件", draft.allowDownload) {
+                        draft = draft.copy(allowDownload = it)
+                    }
+                    PermissionSwitch("JavaScript", draft.allowJs) { draft = draft.copy(allowJs = it) }
+                    PermissionSwitch("加载图片", draft.allowImages) {
+                        draft = draft.copy(allowImages = it)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    SitePermissionStore.upsert(app.settings, draft)
+                    refreshKey++
+                    editing = null
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    SitePermissionStore.remove(app.settings, origin.host)
+                    refreshKey++
+                    editing = null
+                }) { Text("恢复默认") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun PermissionSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            label,
+            fontSize = 14.sp,
+            modifier = Modifier.weight(1f)
+        )
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+/** 操作记录：权限放行/拦截、下载等关键动作的审计流水 */
+@Composable
+private fun AuditLogPage() {
+    val context = LocalContext.current
+    val app = context.applicationContext as App
+    val scope = rememberCoroutineScope()
+    val logs by app.database.auditLogDao()
+        .observeAll()
+        .collectAsStateWithLifecycle(initialValue = emptyList())
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "共 ${logs.size} 条；无痕模式下的操作不记录",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = {
+                scope.launch { app.database.auditLogDao().clearAll() }
+            }) { Text("清空") }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        if (logs.isEmpty()) {
+            EmptyHint("暂无操作记录。")
+        } else {
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(logs, key = { it.id }) { log ->
+                    AuditLogRow(log)
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AuditLogRow(log: AuditLog) {
+    val time = remember(log.id) {
+        SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date(log.createdAt))
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 9.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                log.action,
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                log.result,
+                fontSize = 11.sp,
+                color = if (log.result == "允许" || log.result == "开始" || log.result == "完成") {
+                    Color(0xFF3E8E52)
+                } else {
+                    MaterialTheme.colorScheme.error
+                }
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                time,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (log.host.isNotBlank()) {
+            Text(
+                log.host,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (log.detail.isNotBlank()) {
+            Text(
+                log.detail,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+private fun hostOfText(url: String): String {
+    val text = url.trim()
+    if (text.isBlank()) return ""
+    return runCatching {
+        val withoutScheme = text.substringAfter("://", text)
+        withoutScheme.substringBefore('/').substringBefore('?').substringBefore('#')
+            .substringAfterLast('@').substringBefore(':').lowercase()
+    }.getOrDefault("")
 }
 
 private fun hasLocationPermission(context: Context): Boolean =

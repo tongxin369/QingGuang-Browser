@@ -127,6 +127,16 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_HOME_WALLPAPER, null)
         set(value) = prefs.edit().putString(KEY_HOME_WALLPAPER, value).apply()
 
+    /** 夜间强制深色网页（注入 CSS 反色） */
+    var nightWeb: Boolean
+        get() = prefs.getBoolean(KEY_NIGHT_WEB, false)
+        set(value) = prefs.edit().putBoolean(KEY_NIGHT_WEB, value).apply()
+
+    /** 广告拦截自定义域名，换行/逗号分隔 */
+    var adBlockExtraHosts: String
+        get() = prefs.getString(KEY_AD_EXTRA_HOSTS, "").orEmpty()
+        set(value) = prefs.edit().putString(KEY_AD_EXTRA_HOSTS, value).apply()
+
     /** 阅读模式正文字号（sp） */
     var readerFontSize: Int
         get() = prefs.getInt(KEY_READER_FONT_SIZE, 19)
@@ -136,6 +146,11 @@ class SettingsStore(context: Context) {
     var readerLinePercent: Int
         get() = prefs.getInt(KEY_READER_LINE_PERCENT, 190)
         set(value) = prefs.edit().putInt(KEY_READER_LINE_PERCENT, value).apply()
+
+    /** 站点级权限矩阵（JSON 数组字符串） */
+    var sitePermissionsJson: String
+        get() = prefs.getString(KEY_SITE_PERMISSIONS, "").orEmpty()
+        set(value) = prefs.edit().putString(KEY_SITE_PERMISSIONS, value).apply()
 
     companion object {
         private const val KEY_SEARCH_ENGINE = "search_engine"
@@ -162,8 +177,11 @@ class SettingsStore(context: Context) {
         private const val KEY_AD_BLOCK = "ad_block"
         private const val KEY_INCOGNITO = "incognito"
         private const val KEY_HOME_WALLPAPER = "home_wallpaper"
+        private const val KEY_NIGHT_WEB = "night_web"
+        private const val KEY_AD_EXTRA_HOSTS = "ad_extra_hosts"
         private const val KEY_READER_FONT_SIZE = "reader_font_size"
         private const val KEY_READER_LINE_PERCENT = "reader_line_percent"
+        private const val KEY_SITE_PERMISSIONS = "site_permissions"
 
         const val DEFAULT_SEARCH_ENGINE = "https://www.bing.com/search?q=%s"
         const val DESKTOP_UA =

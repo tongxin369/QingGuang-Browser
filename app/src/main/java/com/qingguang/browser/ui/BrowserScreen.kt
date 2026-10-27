@@ -129,6 +129,8 @@ enum class OverlayPage(val title: String) {
     HISTORY("历史"),
     DOWNLOADS("下载"),
     OFFLINE_PAGES("离线网页"),
+    PERMISSION_CENTER("权限中心"),
+    AUDIT_LOG("操作记录"),
     DATA_BACKUPS("数据备份"),
     SETTINGS("设置")
 }
@@ -904,6 +906,8 @@ private fun menuIcon(
     MenuItem.OFFLINE_SAVE -> Icons.Filled.SaveAlt
     MenuItem.DOWNLOAD_IMAGES -> Icons.Filled.Image
     MenuItem.OFFLINE_LIST -> Icons.Filled.FolderOpen
+    MenuItem.PERMISSION_CENTER -> Icons.Filled.Lock
+    MenuItem.AUDIT_LOG -> Icons.Filled.Description
     MenuItem.AD_BLOCK -> Icons.Filled.Block
     MenuItem.INCOGNITO -> if (incognito) Icons.Filled.VisibilityOff else Icons.Filled.Visibility
     MenuItem.CLEAR_CACHE -> Icons.Filled.Delete
@@ -976,6 +980,8 @@ private fun MenuPanel(
             MenuItem.OFFLINE_SAVE -> controller.saveCurrentPageOffline()
             MenuItem.DOWNLOAD_IMAGES -> controller.downloadAllImages()
             MenuItem.OFFLINE_LIST -> onOpenOverlay(OverlayPage.OFFLINE_PAGES)
+            MenuItem.PERMISSION_CENTER -> onOpenOverlay(OverlayPage.PERMISSION_CENTER)
+            MenuItem.AUDIT_LOG -> onOpenOverlay(OverlayPage.AUDIT_LOG)
             MenuItem.AD_BLOCK -> {
                 app.settings.adBlock = !app.settings.adBlock
                 controller.applySettings()

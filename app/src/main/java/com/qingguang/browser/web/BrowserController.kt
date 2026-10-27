@@ -40,12 +40,15 @@ import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewFeature
 import com.qingguang.browser.App
+import com.qingguang.browser.data.AuditLog
 import com.qingguang.browser.data.DownloadRecord
 import com.qingguang.browser.data.HistoryItem
 import com.qingguang.browser.data.OfflinePage
 import com.qingguang.browser.util.BackupInfo
 import com.qingguang.browser.util.DownloadNotifier
 import com.qingguang.browser.util.SettingsStore
+import com.qingguang.browser.util.SitePermissionStore
+import com.qingguang.browser.util.hostOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -325,8 +328,31 @@ class BrowserController(private val activity: Activity) {
         stopReadAloud()
         val tab = currentTab() ?: newTabInternal()
         showHome = false
+        applySitePolicy(tab.webView, url)
         tab.webView.loadUrl(url)
         refresh()
+    }
+
+    /** 按站点权限矩阵设置脚本/图片开关（未配置的站点保持默认允许） */
+    private fun applySitePolicy(webView: WebView, url: String) {
+        if (!url.startsWith("http")) return
+        val host = hostOf(url)
+        if (host.isBlank()) return
+        val policy = SitePermissionStore.policyFor(app.settings, host)
+        webView.settings.javaScriptEnabled = policy.allowJs
+        webView.settings.blockNetworkImage = !policy.allowImages
+        if (!policy.allowJs) audit("脚本", "禁用", host, url)
+        if (!policy.allowImages) audit("图片", "拦截", host, url)
+    }
+
+    /** 写入一条操作审计日志（无痕模式不记录） */
+    internal fun audit(action: String, result: String, host: String = "", detail: String = "") {
+        if (app.settings.incognito) return
+        scope.launch {
+            val dao = app.database.auditLogDao()
+            dao.insert(AuditLog(action = action, host = host, result = result, detail = detail))
+            dao.prune()
+        }
     }
 
     /** 新标签页打开（长按菜单、链接菜单共用） */
@@ -497,6 +523,9 @@ class BrowserController(private val activity: Activity) {
                     if (app.settings.adBlock) {
                         view.evaluateJavascript(AD_HIDE_JS, null)
                     }
+                    if (app.settings.nightWeb) {
+                        view.evaluateJavascript(NIGHT_CSS_JS, null)
+                    }
                     // 页面加载完成后自动备份一次，降低"交互后直接退出"导致的数据丢失风险
                     if (app.settings.autoBackup && !app.settings.incognito &&
                         url != null && !url.startsWith("about:")
@@ -523,23 +552,47 @@ class BrowserController(private val activity: Activity) {
                 isUserGesture: Boolean,
                 resultMsg: android.os.Message
             ): Boolean {
-                if (app.settings.adBlock) {
+                val host = hostOf(view.url ?: "")
+                val policy = SitePermissionStore.policyFor(app.settings, host)
+                if (app.settings.adBlock || !policy.allowPopup) {
                     toast("已拦截网页弹窗")
+                    audit("弹窗", "拦截", host, view.url ?: "")
                     return false
                 }
                 return super.onCreateWindow(view, isDialog, isUserGesture, resultMsg)
+            }
+
+            override fun onPermissionRequest(request: android.webkit.PermissionRequest) {
+                val host = hostOf(request.origin.toString())
+                val policy = SitePermissionStore.policyFor(app.settings, host)
+                if (policy.allowCamera) {
+                    request.grant(request.resources)
+                    audit("摄像头/麦克风", "允许", host, request.origin.toString())
+                } else {
+                    request.deny()
+                    audit("摄像头/麦克风", "拒绝", host, request.origin.toString())
+                }
             }
 
             override fun onGeolocationPermissionsShowPrompt(
                 origin: String,
                 callback: GeolocationPermissions.Callback
             ) {
+                val host = hostOf(origin)
+                if (!SitePermissionStore.policyFor(app.settings, host).allowGeo) {
+                    callback.invoke(origin, false, true)
+                    audit("定位", "拒绝", host, origin)
+                    return
+                }
                 val requester = locationRequester
                 if (requester == null) {
                     callback.invoke(origin, false, true)
                     return
                 }
-                requester { granted -> callback.invoke(origin, granted, true) }
+                requester { granted ->
+                    callback.invoke(origin, granted, true)
+                    audit("定位", if (granted) "允许" else "拒绝", host, origin)
+                }
             }
 
             override fun onShowFileChooser(
@@ -614,6 +667,7 @@ class BrowserController(private val activity: Activity) {
             tab.webView.settings.textZoom = app.settings.textZoom
             tab.webView.settings.userAgentString =
                 if (app.settings.desktopMode) SettingsStore.DESKTOP_UA else defaultUserAgent
+            tab.webView.url?.let { applySitePolicy(tab.webView, it) }
             applyDarkMode(tab.webView)
         }
         currentTab()?.webView?.reload()
@@ -805,6 +859,11 @@ class BrowserController(private val activity: Activity) {
         if (host.isBlank()) return false
         val h = host.lowercase()
         if (AD_HOSTS.any { h == it || h.endsWith(".$it") }) return true
+        val extra = app.settings.adBlockExtraHosts
+            .split('\n', ',', '，')
+            .map { it.trim().lowercase() }
+            .filter { it.isNotBlank() }
+        if (extra.any { h == it || h.endsWith(".$it") }) return true
         return h.startsWith("ads.") || h.startsWith("ad.") || h.contains("adserver")
     }
 
@@ -817,6 +876,13 @@ class BrowserController(private val activity: Activity) {
         contentDisposition: String,
         mimetype: String
     ) {
+        val host = if (url.startsWith("http")) hostOf(url) else currentUrl
+        val policy = SitePermissionStore.policyFor(app.settings, host)
+        if (!policy.allowDownload) {
+            toast("该站点下载权限已被关闭，可在「权限中心」开启")
+            audit("下载", "拒绝", host, url)
+            return
+        }
         val fileName = if (url.startsWith("data:")) {
             fallbackFileName(contentDisposition, mimetype)
         } else {
@@ -865,6 +931,7 @@ class BrowserController(private val activity: Activity) {
         // Android 13+ 首次下载时申请通知权限（拒绝也不影响下载本身）
         notificationPermissionRequester?.invoke { }
         val finalName = sanitizeDownloadName(fileName).ifBlank { pending.suggestedName }
+        audit("下载", "开始", hostOf(pending.url.ifBlank { currentUrl }), finalName)
         if (pending.isBlobOrData) {
             downloadBlobOrData(pending.url, pending.contentDisposition, pending.mimeType, finalName)
         } else {
@@ -1492,6 +1559,18 @@ class BrowserController(private val activity: Activity) {
             "png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp", "avif",
             "css", "js", "woff", "woff2", "ttf", "otf"
         )
+
+        /** 夜间网页：整体反色再反色图片，得到近似深色主题 */
+        private val NIGHT_CSS_JS = """
+            (function(){
+              if (document.getElementById('qg-night')) return;
+              var s = document.createElement('style');
+              s.id = 'qg-night';
+              s.textContent = 'html{filter:invert(1) hue-rotate(180deg);background:#111!important}' +
+                'img,video,canvas,svg,picture{filter:invert(1) hue-rotate(180deg)!important}';
+              document.documentElement.appendChild(s);
+            })();
+        """.trimIndent()
 
         private const val AD_HIDE_JS =
             "(function(){if(document.getElementById('qg-adblock'))return;" +

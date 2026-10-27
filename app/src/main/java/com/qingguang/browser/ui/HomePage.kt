@@ -99,6 +99,7 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.qingguang.browser.App
 import com.qingguang.browser.R
+import com.qingguang.browser.data.Bookmark
 import com.qingguang.browser.data.HomeItem
 import com.qingguang.browser.data.LocalPage
 import com.qingguang.browser.util.LocalSiteManager
@@ -108,18 +109,22 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
-/** 第一页 4 列 × 4 行 = 16 个；第二页 4 列 × 6 行 = 24 个；第三页起 4 列 × 8 行 = 32 个 */
-internal const val HOME_PAGE_CAPACITY = 16
-private const val SECOND_PAGE_CAPACITY = 24
-private const val EXTRA_PAGE_CAPACITY = 32
-private const val HOME_COLUMNS = 4
+/**
+ * 图标网格规格（按参考图测算）：
+ * 图标 52dp 保持不变；4 列时相邻图标横向净间距约 33dp。
+ * 参考 X 浏览器（横向间距略大于纵向）与手机桌面（接近一致），
+ * 取行距 104dp：图标 52 + 文字 6/15 + 纵向净间距约 31dp，与横向 33dp 基本一致。
+ */
+internal const val HOME_COLUMNS = 4
+private const val HOME_ROWS = 5
+private val SHORTCUT_ROW_PITCH = 104.dp
+/** 图标行底部到“三个点”指示器的统一基准间隔 */
+private val SHORTCUT_BOTTOM_GAP = 36.dp
 
-/** 指定页面的图标容量：第一页 16 个，第二页 24 个，后续页面 32 个 */
-internal fun homePageCapacity(page: Int): Int = when {
-    page <= 0 -> HOME_PAGE_CAPACITY
-    page == 1 -> SECOND_PAGE_CAPACITY
-    else -> EXTRA_PAGE_CAPACITY
-}
+/** 所有快捷入口页统一容量：4 列 × 5 行 = 20 个，保证各页图标处于同一水平线 */
+internal const val HOME_PAGE_CAPACITY = HOME_COLUMNS * HOME_ROWS
+
+internal fun homePageCapacity(page: Int): Int = HOME_PAGE_CAPACITY
 
 private val pageNames = arrayOf("第一页", "第二页", "第三页", "第四页", "第五页", "第六页")
 
@@ -130,7 +135,7 @@ private const val SHORTCUT_HINT =
         "· 拖到另一个图标上：合并为分组\n" +
         "· 拖到空白格子：调整位置（关闭自动补位后可保留空位）\n" +
         "· 点击分组标题：重命名分组；分组内拖到空格可排序\n" +
-        "· 第一页 16 个、第二页 24 个、第三页起每页 32 个图标，页面放满后新图标自动进入下一页"
+        "· 每页统一 4 列 × 5 行 = 20 个图标，页面放满后新图标自动进入下一页"
 
 /** 首页：支持 2~99 页，第 1 页常驻主页，第 2 页本地网页模块，其余为快捷入口页 */
 @Composable
@@ -143,8 +148,11 @@ fun HomePage(
     val context = LocalContext.current
     val app = context.applicationContext as App
     val scope = rememberCoroutineScope()
-    val totalPages = pageCount.coerceIn(2, 99)
-    val pagerState = rememberPagerState(pageCount = { totalPages })
+    // 快捷入口页数量（第一页为主页，第二页起为空白快捷入口页）
+    val totalPages = pageCount.coerceIn(1, 99)
+    // 第 0 页是“本地网页”页（位于主页左侧），第 1 页是主页，之后是快捷入口页
+    val pagerCount = totalPages + 1
+    val pagerState = rememberPagerState(initialPage = 1) { pagerCount }
 
     val homeItems by app.database.homeItemDao()
         .observeAll()
@@ -222,63 +230,57 @@ fun HomePage(
                     .background(MaterialTheme.colorScheme.background.copy(alpha = 0.35f))
             )
         }
-        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
-            val pageItems = itemsByPage[page]
-            val openItem: (HomeItem) -> Unit = { item ->
-                if (item.isFolder) openFolder = item else controller.loadUrl(item.url)
-            }
-            val longPress: (HomeItem) -> Unit = { actionTarget = it }
-            when (page) {
-                0 -> HomeMainPage(
+        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { pagerPage ->
+            if (pagerPage == 0) {
+                LocalPagesPage(
                     controller = controller,
-                    onOpenOverlay = onOpenOverlay,
-                    onOpenLocalPages = { scope.launch { pagerState.animateScrollToPage(1) } },
-                    items = pageItems,
-                    allItems = homeItems,
-                    autoCompact = autoCompact,
-                    onShowHint = { showHint = true },
-                    onOpenItem = openItem,
-                    onLongPress = longPress,
-                    onMerge = { dragged, target -> mergeItems(dragged, target, 0L, 0) },
-                    onMoveToSlot = { item, slot ->
-                        scope.launch {
-                            app.database.homeItemDao().updateSlot(item.id, slot)
-                            compactPage(item.page)
-                        }
-                    }
+                    totalPages = totalPages,
+                    homeItems = homeItems,
+                    autoCompact = autoCompact
                 )
-                1 -> HomeSecondPage(
-                    controller = controller,
-                    items = pageItems,
-                    allItems = homeItems,
-                    autoCompact = autoCompact,
-                    onShowHint = { showHint = true },
-                    onOpenItem = openItem,
-                    onLongPress = longPress,
-                    onMerge = { dragged, target -> mergeItems(dragged, target, 0L, 1) },
-                    onMoveToSlot = { item, slot ->
-                        scope.launch {
-                            app.database.homeItemDao().updateSlot(item.id, slot)
-                            compactPage(item.page)
+            } else {
+                val page = pagerPage - 1
+                val pageItems = itemsByPage[page]
+                val openItem: (HomeItem) -> Unit = { item ->
+                    if (item.isFolder) openFolder = item else controller.loadUrl(item.url)
+                }
+                val longPress: (HomeItem) -> Unit = { actionTarget = it }
+                when (page) {
+                    0 -> HomeMainPage(
+                        controller = controller,
+                        onOpenOverlay = onOpenOverlay,
+                        onOpenLocalPages = { scope.launch { pagerState.animateScrollToPage(0) } },
+                        items = pageItems,
+                        allItems = homeItems,
+                        autoCompact = autoCompact,
+                        onShowHint = { showHint = true },
+                        onOpenItem = openItem,
+                        onLongPress = longPress,
+                        onMerge = { dragged, target -> mergeItems(dragged, target, 0L, 0) },
+                        onMoveToSlot = { item, slot ->
+                            scope.launch {
+                                app.database.homeItemDao().updateSlot(item.id, slot)
+                                compactPage(item.page)
+                            }
                         }
-                    }
-                )
-                else -> HomeExtraPage(
-                    pageIndex = page,
-                    items = pageItems,
-                    allItems = homeItems,
-                    autoCompact = autoCompact,
-                    onShowHint = { showHint = true },
-                    onOpenItem = openItem,
-                    onLongPress = longPress,
-                    onMerge = { dragged, target -> mergeItems(dragged, target, 0L, page) },
-                    onMoveToSlot = { item, slot ->
-                        scope.launch {
-                            app.database.homeItemDao().updateSlot(item.id, slot)
-                            compactPage(item.page)
+                    )
+                    else -> HomeExtraPage(
+                        pageIndex = page,
+                        items = pageItems,
+                        allItems = homeItems,
+                        autoCompact = autoCompact,
+                        onShowHint = { showHint = true },
+                        onOpenItem = openItem,
+                        onLongPress = longPress,
+                        onMerge = { dragged, target -> mergeItems(dragged, target, 0L, page) },
+                        onMoveToSlot = { item, slot ->
+                            scope.launch {
+                                app.database.homeItemDao().updateSlot(item.id, slot)
+                                compactPage(item.page)
+                            }
                         }
-                    }
-                )
+                    )
+                }
             }
         }
         Box(
@@ -287,9 +289,9 @@ fun HomePage(
                 .padding(bottom = 10.dp),
             contentAlignment = Alignment.Center
         ) {
-            if (totalPages <= 8) {
+            if (pagerCount <= 8) {
                 Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    repeat(totalPages) { index ->
+                    repeat(pagerCount) { index ->
                         Box(
                             Modifier
                                 .size(if (index == pagerState.currentPage) 6.dp else 5.dp)
@@ -306,7 +308,7 @@ fun HomePage(
                 }
             } else {
                 Text(
-                    "${pagerState.currentPage + 1} / $totalPages",
+                    "${pagerState.currentPage + 1} / $pagerCount",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -623,7 +625,7 @@ private fun HomeMainPage(
             .pointerInput(Unit) {
                 detectTapGestures(onTap = { focusManager.clearFocus() })
             }
-            .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 24.dp)
+            .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = SHORTCUT_BOTTOM_GAP)
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -643,15 +645,7 @@ private fun HomeMainPage(
             }
         }
 
-        Spacer(Modifier.height(18.dp))
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Image(
-                painter = painterResource(R.drawable.ic_launcher_foreground),
-                contentDescription = null,
-                modifier = Modifier.size(104.dp)
-            )
-        }
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(14.dp))
 
         Surface(
             modifier = Modifier
@@ -706,7 +700,7 @@ private fun HomeMainPage(
                 )
             }
         }
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(14.dp))
 
         Row(
             Modifier.fillMaxWidth(),
@@ -726,11 +720,9 @@ private fun HomeMainPage(
             }
             AppIconEntry("本地网页", Icons.Filled.FolderOpen, Color(0xFFC7A34A), onClick = onOpenLocalPages)
         }
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(14.dp))
 
-        ShortcutHeader(pageLabel = null, onShowHint = onShowHint, onOpenBookmarks = {
-            onOpenOverlay(OverlayPage.BOOKMARKS)
-        })
+        ShortcutHeader(pageLabel = null, onShowHint = onShowHint)
 
         if (items.isEmpty()) {
             Text(
@@ -739,45 +731,106 @@ private fun HomeMainPage(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 12.dp)
             )
-        } else {
-            HomeShortcutGrid(
-                cells = shortcutCells,
-                columns = HOME_COLUMNS,
-                allItems = allItems,
-                onOpen = onOpenItem,
-                onLongPress = onLongPress,
-                onMerge = onMerge,
-                onMoveToSlot = onMoveToSlot,
-                modifier = Modifier.weight(1f)
-            )
         }
+        HomeShortcutGrid(
+            cells = shortcutCells,
+            columns = HOME_COLUMNS,
+            allItems = allItems,
+            onOpen = onOpenItem,
+            onLongPress = onLongPress,
+            onMerge = onMerge,
+            onMoveToSlot = onMoveToSlot,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 
-/** 首页第二页：带边框的「本地网页」模块 + 快捷入口第二页 */
+/** 本地网页：位于首页左侧的独立页面，不放快捷入口 */
 @Composable
-private fun HomeSecondPage(
+private fun LocalPagesPage(
     controller: BrowserController,
-    items: List<HomeItem>,
-    allItems: List<HomeItem>,
-    autoCompact: Boolean,
-    onShowHint: () -> Unit,
-    onOpenItem: (HomeItem) -> Unit,
-    onLongPress: (HomeItem) -> Unit,
-    onMerge: (HomeItem, HomeItem) -> Unit,
-    onMoveToSlot: (HomeItem, Int) -> Unit
+    totalPages: Int,
+    homeItems: List<HomeItem>,
+    autoCompact: Boolean
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as App
     val scope = rememberCoroutineScope()
-    val shortcutCells = remember(items, autoCompact) {
-        buildHomeCells(items, autoCompact, homePageCapacity(1))
-    }
     val localPages by app.database.localPageDao()
         .observeAll()
         .collectAsStateWithLifecycle(initialValue = emptyList())
     var chooserPage by remember { mutableStateOf<LocalPage?>(null) }
     var chooserFiles by remember { mutableStateOf<List<String>>(emptyList()) }
+    var batchPage by remember { mutableStateOf<LocalPage?>(null) }
+    var batchCount by remember { mutableStateOf(0) }
+
+    fun batchImport(page: LocalPage, toBookmarks: Boolean, toHome: Boolean) {
+        scope.launch {
+            val files = withContext(Dispatchers.IO) { app.localSites.htmlFiles(page) }
+            if (files.isEmpty()) {
+                toast(context, "该文件夹里没有 .html 文件")
+                return@launch
+            }
+            if (toBookmarks) {
+                files.forEach { relative ->
+                    val title = relative.substringAfterLast('/').substringBeforeLast('.')
+                    app.database.bookmarkDao().insert(
+                        Bookmark(
+                            title = title.ifBlank { page.displayName },
+                            url = app.localSites.entryUrlFor(page, relative)
+                        )
+                    )
+                }
+            }
+            var homeAdded = 0
+            if (toHome) {
+                val dao = app.database.homeItemDao()
+                val all = dao.all()
+                val used = (0 until totalPages).associateWith { pg ->
+                    all.filter { it.parentId == 0L && it.page == pg }
+                        .map { it.slot }
+                        .toMutableSet()
+                }.toMutableMap()
+                files.forEach { relative ->
+                    var targetPage = -1
+                    var targetSlot = -1
+                    for (pg in 0 until totalPages) {
+                        val slot = (0 until homePageCapacity(pg)).firstOrNull {
+                            it !in (used[pg] ?: mutableSetOf())
+                        }
+                        if (slot != null) {
+                            targetPage = pg
+                            targetSlot = slot
+                            break
+                        }
+                    }
+                    if (targetPage >= 0) {
+                        val title = relative.substringAfterLast('/').substringBeforeLast('.')
+                        dao.insert(
+                            HomeItem(
+                                title = title.ifBlank { page.displayName },
+                                url = app.localSites.entryUrlFor(page, relative),
+                                page = targetPage,
+                                slot = targetSlot
+                            )
+                        )
+                        used[targetPage]?.add(targetSlot)
+                        homeAdded++
+                    }
+                }
+            }
+            val msg = buildString {
+                if (toBookmarks) append("书签 ${files.size} 个")
+                if (toHome) {
+                    if (isNotEmpty()) append("，")
+                    append("首页 $homeAdded 个")
+                    if (homeAdded < files.size) append("（首页已满）")
+                }
+                append(" 已导入")
+            }
+            toast(context, msg)
+        }
+    }
 
     fun openLocalPage(page: LocalPage, relativePath: String? = null) {
         scope.launch {
@@ -847,6 +900,18 @@ private fun HomeSecondPage(
             .fillMaxSize()
             .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 24.dp)
     ) {
+        Text(
+            "本地网页",
+            fontSize = 20.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        Text(
+            "从主页向左滑进入；此页不放置快捷入口",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 2.dp, bottom = 12.dp)
+        )
         Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -922,7 +987,7 @@ private fun HomeSecondPage(
                         )
                         Column(
                             Modifier
-                                .heightIn(max = 132.dp)
+                                .heightIn(max = 360.dp)
                                 .verticalScroll(rememberScrollState())
                         ) {
                             localPages.forEach { page ->
@@ -953,6 +1018,14 @@ private fun HomeSecondPage(
                                         TextButton(onClick = { showEntryChooser(page) }) {
                                             Text("换入口", fontSize = 12.sp)
                                         }
+                                        TextButton(onClick = {
+                                            scope.launch {
+                                                batchCount = withContext(Dispatchers.IO) {
+                                                    app.localSites.htmlFiles(page).size
+                                                }
+                                                batchPage = page
+                                            }
+                                        }) { Text("批量导入", fontSize = 12.sp) }
                                     }
                                 }
                             }
@@ -960,29 +1033,6 @@ private fun HomeSecondPage(
                     }
                 }
             }
-        Spacer(Modifier.height(16.dp))
-
-        ShortcutHeader(pageLabel = "第 2 页", onShowHint = onShowHint)
-
-        if (items.isEmpty()) {
-            Text(
-                "第二页还是空的。第一页放满后，新添加的快捷入口会自动出现在这里；也可以长按图标手动移入。",
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 12.dp)
-            )
-        } else {
-            HomeShortcutGrid(
-                cells = shortcutCells,
-                columns = HOME_COLUMNS,
-                allItems = allItems,
-                onOpen = onOpenItem,
-                onLongPress = onLongPress,
-                onMerge = onMerge,
-                onMoveToSlot = onMoveToSlot,
-                modifier = Modifier.weight(1f)
-            )
-        }
     }
 
     chooserPage?.let { page ->
@@ -1023,6 +1073,38 @@ private fun HomeSecondPage(
             }
         )
     }
+
+    batchPage?.let { page ->
+        AlertDialog(
+            onDismissRequest = { batchPage = null },
+            title = { Text("批量导入本地网页") },
+            text = {
+                Text(
+                    "将「${page.displayName}」中的 $batchCount 个 HTML 文件批量导入到：",
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                Row {
+                    TextButton(onClick = {
+                        batchPage = null
+                        batchImport(page, toBookmarks = true, toHome = false)
+                    }) { Text("书签") }
+                    TextButton(onClick = {
+                        batchPage = null
+                        batchImport(page, toBookmarks = false, toHome = true)
+                    }) { Text("快捷入口") }
+                    TextButton(onClick = {
+                        batchPage = null
+                        batchImport(page, toBookmarks = true, toHome = true)
+                    }) { Text("两者") }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { batchPage = null }) { Text("取消") }
+            }
+        )
+    }
 }
 
 @Composable
@@ -1043,7 +1125,7 @@ private fun HomeExtraPage(
     Column(
         Modifier
             .fillMaxSize()
-            .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 24.dp)
+            .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = SHORTCUT_BOTTOM_GAP)
     ) {
         ShortcutHeader(pageLabel = pageName(pageIndex), onShowHint = onShowHint)
         Spacer(Modifier.height(14.dp))
@@ -1054,18 +1136,17 @@ private fun HomeExtraPage(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 12.dp)
             )
-        } else {
-            HomeShortcutGrid(
-                cells = shortcutCells,
-                columns = HOME_COLUMNS,
-                allItems = allItems,
-                onOpen = onOpenItem,
-                onLongPress = onLongPress,
-                onMerge = onMerge,
-                onMoveToSlot = onMoveToSlot,
-                modifier = Modifier.weight(1f)
-            )
         }
+        HomeShortcutGrid(
+            cells = shortcutCells,
+            columns = HOME_COLUMNS,
+            allItems = allItems,
+            onOpen = onOpenItem,
+            onLongPress = onLongPress,
+            onMerge = onMerge,
+            onMoveToSlot = onMoveToSlot,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 
@@ -1212,12 +1293,12 @@ private fun HomeShortcutGrid(
             .fillMaxWidth()
             .onSizeChanged { gridSize = it }
     ) {
-        val rows = ((cells.size + columns - 1) / columns).coerceAtLeast(1)
-        // 空间不足时自动压缩行高，保证网格不超出屏幕、不与底部三个点重叠
+        // 固定行距 104dp（图标 52 + 纵向净间距约 31dp），行数固定 5 行、底部对齐；
+        // 只有屏幕高度不足时才等比压缩，保证各页最底部一行始终对齐同一基准线
         val rowHeight = if (constraints.hasBoundedHeight) {
-            minOf(82.dp, maxHeight / rows)
+            minOf(SHORTCUT_ROW_PITCH, maxHeight / HOME_ROWS)
         } else {
-            82.dp
+            SHORTCUT_ROW_PITCH
         }
 
         Box(
@@ -1282,7 +1363,10 @@ private fun HomeShortcutGrid(
                 )
             }
     ) {
-        Column(Modifier.fillMaxWidth()) {
+        Column(
+            Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.Bottom
+        ) {
             cells.chunked(columns).forEachIndexed { rowIndex, rowCells ->
                 Row(
                     Modifier

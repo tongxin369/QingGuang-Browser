@@ -195,3 +195,18 @@ interface OfflinePageDao {
     @Query("DELETE FROM offline_pages WHERE id = :id")
     suspend fun delete(id: Long)
 }
+
+@Dao
+interface AuditLogDao {
+    @Query("SELECT * FROM audit_logs ORDER BY createdAt DESC LIMIT 500")
+    fun observeAll(): Flow<List<AuditLog>>
+
+    @Insert
+    suspend fun insert(log: AuditLog): Long
+
+    @Query("DELETE FROM audit_logs WHERE id NOT IN (SELECT id FROM audit_logs ORDER BY createdAt DESC LIMIT 500)")
+    suspend fun prune()
+
+    @Query("DELETE FROM audit_logs")
+    suspend fun clearAll()
+}
