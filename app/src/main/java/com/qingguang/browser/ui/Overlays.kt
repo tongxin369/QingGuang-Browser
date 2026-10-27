@@ -15,7 +15,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
@@ -90,9 +92,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -108,8 +112,10 @@ import com.qingguang.browser.util.BackupManager
 import com.qingguang.browser.util.SitePermission
 import com.qingguang.browser.util.SitePermissionStore
 import com.qingguang.browser.web.BrowserController
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -334,12 +340,7 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
         }
     }
 
-    val focusManager = LocalFocusManager.current
-    Column(
-        Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) { detectTapGestures { focusManager.clearFocus() } }
-    ) {
+    Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -543,39 +544,58 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                                     }
                                 }
                                 .then(
-                                    if (sortMode) Modifier.pointerInput(bookmark.id) {
-                                        detectDragGesturesAfterLongPress(
-                                            onDragStart = {
-                                                dragId = bookmark.id
-                                                dragOffset = 0f
-                                                autoScroll = 0f
-                                            },
-                                            onDrag = { change, amount ->
-                                                change.consume()
-                                                dragOffset += amount.y
-                                                // 靠近列表上下边缘时自动滚动，拖到很远也能继续移动
-                                                val viewport = bookmarkListState.layoutInfo.viewportSize.height
-                                                if (viewport > 0) {
-                                                    val edge = with(density) { 72.dp.toPx() }
-                                                    val step = when {
-                                                        change.position.y < edge -> -18f
-                                                        change.position.y > viewport - edge -> 18f
-                                                        else -> 0f
+                                    if (sortMode) Modifier.pointerInput(bookmark.id, index) {
+                                        awaitEachGesture {
+                                            // 在 Initial 阶段消费事件，避免被 LazyColumn 的滚动/点击手势抢走
+                                            val down = awaitFirstDown(
+                                                requireUnconsumed = false,
+                                                pass = PointerEventPass.Initial
+                                            )
+                                            val longPressed = awaitLongPressOrCancellation(down.id)
+                                                ?: return@awaitEachGesture
+                                            longPressed.consume()
+                                            dragId = bookmark.id
+                                            dragOffset = 0f
+                                            autoScroll = 0f
+                                            try {
+                                                while (true) {
+                                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                    val change = event.changes
+                                                        .firstOrNull { it.id == down.id } ?: break
+                                                    if (change.changedToUpIgnoreConsumed()) {
+                                                        change.consume()
+                                                        finishReorder(index)
+                                                        break
                                                     }
-                                                    if (step != 0f) {
-                                                        scope.launch {
-                                                            autoScroll += bookmarkListState.scrollBy(step)
+                                                    change.consume()
+                                                    dragOffset += change.positionChange().y
+                                                    // 靠近列表上下边缘时自动滚动，拖到很远也能继续移动
+                                                    val viewport = bookmarkListState
+                                                        .layoutInfo.viewportSize.height
+                                                    if (viewport > 0) {
+                                                        val edge = with(density) { 72.dp.toPx() }
+                                                        val step = when {
+                                                            change.position.y < edge -> -18f
+                                                            change.position.y > viewport - edge -> 18f
+                                                            else -> 0f
+                                                        }
+                                                        if (step != 0f) {
+                                                            scope.launch {
+                                                                autoScroll +=
+                                                                    bookmarkListState.scrollBy(step)
+                                                            }
                                                         }
                                                     }
                                                 }
-                                            },
-                                            onDragEnd = { finishReorder(index) },
-                                            onDragCancel = {
-                                                dragId = null
-                                                dragOffset = 0f
-                                                autoScroll = 0f
+                                            } finally {
+                                                // 手势被系统中断时复位，避免图标卡在浮起状态
+                                                if (dragId == bookmark.id) {
+                                                    dragId = null
+                                                    dragOffset = 0f
+                                                    autoScroll = 0f
+                                                }
                                             }
-                                        )
+                                        }
                                     } else Modifier
                                 )
                         ) {
@@ -1934,6 +1954,26 @@ private fun SiteBackupSection(controller: BrowserController) {
 
     LaunchedEffect(Unit) { backups = app.backups.listBackups() }
 
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val text = runCatching {
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(uri)
+                            ?.bufferedReader()?.use { it.readText() }
+                    }
+                }.getOrNull()
+                if (text.isNullOrBlank()) {
+                    message = "读取 JSON 文件失败"
+                } else {
+                    controller.restoreSiteData(text) { _, msg -> message = msg }
+                }
+            }
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.padding(horizontal = 20.dp)) {
             Text("备份目录", fontSize = 13.sp, fontWeight = FontWeight.Medium)
@@ -1971,6 +2011,11 @@ private fun SiteBackupSection(controller: BrowserController) {
                 },
                 modifier = Modifier.fillMaxWidth()
             ) { Text("备份当前页面") }
+            Spacer(Modifier.height(6.dp))
+            OutlinedButton(
+                onClick = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("从 JSON 恢复当前站点数据") }
             message?.let {
                 Text(
                     it,
@@ -2445,6 +2490,10 @@ private fun PermissionCenterPage(controller: BrowserController) {
     var refreshKey by remember { mutableStateOf(0) }
     val permissions = remember(refreshKey) { SitePermissionStore.load(app.settings) }
     var editing by remember { mutableStateOf<SitePermission?>(null) }
+    var showSiteLogs by remember { mutableStateOf(false) }
+    val siteLogsAll by app.database.auditLogDao()
+        .observeAll()
+        .collectAsStateWithLifecycle(initialValue = emptyList())
     var showAdd by remember { mutableStateOf(false) }
     var newHost by remember { mutableStateOf("") }
     val currentHost = hostOfText(controller.currentUrl)
@@ -2506,7 +2555,39 @@ private fun PermissionCenterPage(controller: BrowserController) {
                 TextButton(onClick = {
                     SitePermissionStore.upsert(app.settings, currentPolicy)
                     refreshKey++
-                }) { Text("保存当前站点") }
+                }) { Text("保存当前站点", fontSize = 13.sp) }
+            }
+            if (currentHost.isNotBlank()) {
+                TextButton(onClick = { showSiteLogs = true }) {
+                    Text("最近操作", fontSize = 13.sp)
+                }
+            }
+        }
+        if (currentHost.isNotBlank()) {
+            val sessionGranted = controller.sessionGrantedHosts().contains(currentHost.lowercase())
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    if (sessionGranted) "该站点本次会话已全部放行（重启应用后失效）"
+                    else "临时放行只影响本次会话，不改动持久设置",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = {
+                    if (sessionGranted) controller.revokeSessionPermissions(currentHost)
+                    else controller.grantSessionPermissions(currentHost)
+                    refreshKey++
+                }) {
+                    Text(
+                        if (sessionGranted) "取消放行" else "本次会话全部允许",
+                        fontSize = 12.sp
+                    )
+                }
             }
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -2547,6 +2628,29 @@ private fun PermissionCenterPage(controller: BrowserController) {
         }
     }
 
+    if (showSiteLogs) {
+        val siteLogs = siteLogsAll.filter { it.host == currentHost }.take(60)
+        AlertDialog(
+            onDismissRequest = { showSiteLogs = false },
+            title = { Text("$currentHost 的最近操作") },
+            text = {
+                if (siteLogs.isEmpty()) {
+                    Text("该站点还没有操作记录。")
+                } else {
+                    LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                        items(siteLogs, key = { it.id }) { log ->
+                            AuditLogRow(log)
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSiteLogs = false }) { Text("关闭") }
+            }
+        )
+    }
+
     if (showAdd) {
         AlertDialog(
             onDismissRequest = { showAdd = false },
@@ -2554,6 +2658,11 @@ private fun PermissionCenterPage(controller: BrowserController) {
             text = {
                 Column {
                     Text("填写域名，例如 example.com", fontSize = 12.sp)
+                    Text(
+                        "支持通配：.example.com 覆盖其全部子域",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     OutlinedTextField(
                         value = newHost,
                         onValueChange = { newHost = it },
@@ -2602,6 +2711,20 @@ private fun PermissionCenterPage(controller: BrowserController) {
                     PermissionSwitch("JavaScript", draft.allowJs) { draft = draft.copy(allowJs = it) }
                     PermissionSwitch("加载图片", draft.allowImages) {
                         draft = draft.copy(allowImages = it)
+                    }
+                    Text(
+                        "夜间网页调色",
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(-1 to "跟随全局", 0 to "关闭", 1 to "开启").forEach { (value, label) ->
+                            FilterChip(
+                                selected = draft.nightMode == value,
+                                onClick = { draft = draft.copy(nightMode = value) },
+                                label = { Text(label, fontSize = 11.sp) }
+                            )
+                        }
                     }
                 }
             },

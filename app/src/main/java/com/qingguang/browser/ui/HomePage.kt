@@ -16,7 +16,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -53,6 +52,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -89,7 +89,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
@@ -126,9 +125,9 @@ private val SHORTCUT_ROW_PITCH = 104.dp
 /** 图标行底部到“三个点”指示器的统一基准间隔 */
 private val SHORTCUT_BOTTOM_GAP = 36.dp
 
-/** 第一页有搜索栏与功能入口，占 4 行；第二页起无多余组件，占 6 行 */
+/** 第一页有搜索栏与功能入口，占 4 行；第二页起无多余组件，占 7 行 */
 internal const val HOME_PAGE_CAPACITY = 16
-internal const val EXTRA_PAGE_CAPACITY = 24
+internal const val EXTRA_PAGE_CAPACITY = 28
 
 internal fun homePageCapacity(page: Int): Int =
     if (page <= 0) HOME_PAGE_CAPACITY else EXTRA_PAGE_CAPACITY
@@ -142,7 +141,7 @@ private const val SHORTCUT_HINT =
         "· 拖到另一个图标上：合并为分组\n" +
         "· 拖到空白格子：调整位置（关闭自动补位后可保留空位）\n" +
         "· 点击分组标题：重命名分组；分组内拖到空格可排序\n" +
-        "· 每页统一 4 列 × 5 行 = 20 个图标，页面放满后新图标自动进入下一页"
+        "· 第一页 4 列 × 4 行 = 16 个；第二页起 4 列 × 7 行 = 28 个，页面放满后新图标自动进入下一页"
 
 /** 首页：支持 2~99 页，第 1 页常驻主页，第 2 页本地网页模块，其余为快捷入口页 */
 @Composable
@@ -200,11 +199,11 @@ fun HomePage(
         return (0 until homePageCapacity(page)).firstOrNull { it !in used }
     }
 
-    // 旧版容量为 16/24/32，统一为每页 20 后把超出范围的图标顺移到后续页，避免图标“消失”
+    // 超出当前页容量的图标顺移到后续页，避免图标“消失”；不会把后续页图标挪回第一页
     LaunchedEffect(homeItems, totalPages) {
-        val capacity = HOME_PAGE_CAPACITY
+        // 按每页各自容量判断越界；第二页起 28 个，不能沿用第一页的 16
         val overflow = rootItems.filter {
-            it.page !in 0 until totalPages || it.slot !in 0 until capacity
+            it.page !in 0 until totalPages || it.slot !in 0 until homePageCapacity(it.page)
         }
         if (overflow.isEmpty()) return@LaunchedEffect
         val dao = app.database.homeItemDao()
@@ -213,7 +212,7 @@ fun HomePage(
             var targetSlot = -1
             for (page in 0 until totalPages) {
                 val used = dao.slotsOnPage(page).toSet()
-                val free = (0 until capacity).firstOrNull { it !in used }
+                val free = (0 until homePageCapacity(page)).firstOrNull { it !in used }
                 if (free != null) {
                     targetPage = page
                     targetSlot = free
@@ -650,149 +649,157 @@ private fun HomeMainPage(
     onMoveToSlot: (HomeItem, Int) -> Unit
 ) {
     var query by remember { mutableStateOf("") }
-    val focusManager = LocalFocusManager.current
     // 始终保留整页容量对应的「预备格」，标题位置只由容量决定，不随图标数量上下浮动
     val shortcutCells = remember(items, autoCompact) {
         buildHomeCells(items, autoCompact, HOME_PAGE_CAPACITY)
     }
+    val density = LocalDensity.current
+    val gridHeight = SHORTCUT_ROW_PITCH * 4
 
-    // 首页固定不滚动：网格占满剩余高度，空间不足时压缩图标行高，避免与底部三个点重叠
-    Column(
-        Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                detectTapGestures(onTap = { focusManager.clearFocus() })
-            }
-            .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = SHORTCUT_BOTTOM_GAP)
-    ) {
-        Box(Modifier.fillMaxWidth().height(36.dp)) {
-            Row(
-                Modifier.align(Alignment.Center),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Image(
-                    painter = painterResource(R.drawable.ic_launcher_foreground),
-                    contentDescription = null,
-                    modifier = Modifier.size(26.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    "轻光",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-            }
-            IconButton(
-                onClick = { onOpenOverlay(OverlayPage.SETTINGS) },
-                modifier = Modifier.align(Alignment.CenterEnd)
-            ) {
-                Icon(
-                    Icons.Filled.Settings,
-                    contentDescription = "设置",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-        }
-
-        Spacer(Modifier.height(14.dp))
-
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(24.dp)),
-            shape = RoundedCornerShape(24.dp),
-            color = MaterialTheme.colorScheme.surface
+    // 首页固定不滚动：底部基准不变，多余空间放到顶部，让标题区贴着第一行图标
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        var topHeightPx by remember { mutableStateOf(0) }
+        val topHeightDp = with(density) { topHeightPx.toDp() }
+        val extraTop = (maxHeight - 12.dp - SHORTCUT_BOTTOM_GAP - gridHeight - topHeightDp)
+            .coerceAtLeast(0.dp)
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = SHORTCUT_BOTTOM_GAP)
         ) {
-            Row(
-                Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    Icons.Filled.Search,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(19.dp)
-                )
-                Spacer(Modifier.size(10.dp))
-                BasicTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    singleLine = true,
-                    textStyle = LocalTextStyle.current.copy(
-                        fontSize = 15.sp,
-                        color = MaterialTheme.colorScheme.onSurface
-                    ),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.secondary),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = {
-                        if (query.isNotBlank()) {
-                            controller.submitInput(query)
-                            query = ""
-                        }
-                    }),
-                    modifier = Modifier.fillMaxSize(),
-                    decorationBox = { inner ->
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) {
-                            if (query.isBlank()) {
-                                Text(
-                                    "搜索或输入网址",
-                                    fontSize = 15.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                )
-                            }
-                            inner()
-                        }
+            Spacer(Modifier.height(extraTop))
+            Column(Modifier.onSizeChanged { topHeightPx = it.height }) {
+                Box(Modifier.fillMaxWidth().height(38.dp)) {
+                    Row(
+                        Modifier.align(Alignment.Center),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Image(
+                            painter = painterResource(R.drawable.ic_launcher_foreground),
+                            contentDescription = null,
+                            modifier = Modifier.size(32.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "轻光",
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
                     }
-                )
-            }
-        }
-        Spacer(Modifier.height(14.dp))
+                    IconButton(
+                        onClick = { onOpenOverlay(OverlayPage.SETTINGS) },
+                        modifier = Modifier.align(Alignment.CenterEnd)
+                    ) {
+                        Icon(
+                            Icons.Filled.Settings,
+                            contentDescription = "设置",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
 
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly
-        ) {
-            AppIconEntry("书签", Icons.Filled.BookmarkBorder, Color(0xFF5B8C5A)) {
-                onOpenOverlay(OverlayPage.BOOKMARKS)
-            }
-            AppIconEntry("历史", Icons.Filled.History, Color(0xFF8E5A6E)) {
-                onOpenOverlay(OverlayPage.HISTORY)
-            }
-            AppIconEntry("下载", Icons.Filled.Download, Color(0xFF4A6FA5)) {
-                onOpenOverlay(OverlayPage.DOWNLOADS)
-            }
-            AppIconEntry("备份", Icons.Filled.Backup, Color(0xFF6C4BD8)) {
-                onOpenOverlay(OverlayPage.DATA_BACKUPS)
-            }
-            AppIconEntry("本地网页", Icons.Filled.FolderOpen, Color(0xFFC7A34A), onClick = onOpenLocalPages)
-        }
-        Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(14.dp))
 
-        ShortcutHeader(pageLabel = null, onShowHint = onShowHint)
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(24.dp)),
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surface
+                ) {
+                    Row(
+                        Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Filled.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(19.dp)
+                        )
+                        Spacer(Modifier.size(10.dp))
+                        BasicTextField(
+                            value = query,
+                            onValueChange = { query = it },
+                            singleLine = true,
+                            textStyle = LocalTextStyle.current.copy(
+                                fontSize = 15.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.secondary),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                            keyboardActions = KeyboardActions(onSearch = {
+                                if (query.isNotBlank()) {
+                                    controller.submitInput(query)
+                                    query = ""
+                                }
+                            }),
+                            modifier = Modifier.fillMaxSize(),
+                            decorationBox = { inner ->
+                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) {
+                                    if (query.isBlank()) {
+                                        Text(
+                                            "搜索或输入网址",
+                                            fontSize = 15.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                        )
+                                    }
+                                    inner()
+                                }
+                            }
+                        )
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
 
-        if (items.isEmpty()) {
-            Text(
-                "还没有首页快捷入口。添加书签时勾选「添加到首页」，或在书签长按菜单里选「添加到首页」。",
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 12.dp)
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    AppIconEntry("书签", Icons.Filled.BookmarkBorder, Color(0xFF5B8C5A)) {
+                        onOpenOverlay(OverlayPage.BOOKMARKS)
+                    }
+                    AppIconEntry("历史", Icons.Filled.History, Color(0xFF8E5A6E)) {
+                        onOpenOverlay(OverlayPage.HISTORY)
+                    }
+                    AppIconEntry("下载", Icons.Filled.Download, Color(0xFF4A6FA5)) {
+                        onOpenOverlay(OverlayPage.DOWNLOADS)
+                    }
+                    AppIconEntry("备份", Icons.Filled.Backup, Color(0xFF6C4BD8)) {
+                        onOpenOverlay(OverlayPage.DATA_BACKUPS)
+                    }
+                    AppIconEntry("本地网页", Icons.Filled.FolderOpen, Color(0xFFC7A34A), onClick = onOpenLocalPages)
+                }
+                Spacer(Modifier.height(14.dp))
+
+                ShortcutHeader(pageLabel = null, onShowHint = onShowHint)
+
+                if (items.isEmpty()) {
+                    Text(
+                        "还没有首页快捷入口。添加书签时勾选「添加到首页」，或在书签长按菜单里选「添加到首页」。",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+            }
+            HomeShortcutGrid(
+                cells = shortcutCells,
+                columns = HOME_COLUMNS,
+                allItems = allItems,
+                onOpen = onOpenItem,
+                onLongPress = onLongPress,
+                onMerge = onMerge,
+                onMoveToSlot = onMoveToSlot,
+                modifier = Modifier.fillMaxWidth().height(gridHeight)
             )
         }
-        HomeShortcutGrid(
-            cells = shortcutCells,
-            columns = HOME_COLUMNS,
-            allItems = allItems,
-            onOpen = onOpenItem,
-            onLongPress = onLongPress,
-            onMerge = onMerge,
-            onMoveToSlot = onMoveToSlot,
-            modifier = Modifier.weight(1f)
-        )
     }
 }
 
@@ -1162,6 +1169,7 @@ private fun LocalPagesPage(
         var toBookmarks by remember(page) { mutableStateOf(true) }
         var toHome by remember(page) { mutableStateOf(false) }
         var folderId by remember(page) { mutableStateOf(0L) }
+        var showFolderPicker by remember(page) { mutableStateOf(false) }
         var homeStart by remember(page) { mutableStateOf(0) }
         AlertDialog(
             onDismissRequest = { batchPage = null },
@@ -1176,30 +1184,18 @@ private fun LocalPagesPage(
                     Spacer(Modifier.height(10.dp))
                     SettingsSwitchRowInline("同时导入到书签", toBookmarks) { toBookmarks = it }
                     if (toBookmarks) {
-                        Text("书签位置", fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
                         Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            Modifier.fillMaxWidth().padding(top = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            FilterChip(
-                                selected = folderId == 0L,
-                                onClick = { folderId = 0L },
-                                label = { Text("根目录", fontSize = 11.sp) }
+                            Text(
+                                "书签位置：" + folderPathLabel(folders, folderId),
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                modifier = Modifier.weight(1f)
                             )
-                            folders.forEach { folder ->
-                                FilterChip(
-                                    selected = folderId == folder.id,
-                                    onClick = { folderId = folder.id },
-                                    label = {
-                                        Text(
-                                            folder.name.ifBlank { "未命名文件夹" },
-                                            fontSize = 11.sp,
-                                            maxLines = 1
-                                        )
-                                    }
-                                )
+                            TextButton(onClick = { showFolderPicker = true }) {
+                                Text("选择文件夹", fontSize = 12.sp)
                             }
                         }
                     }
@@ -1243,7 +1239,168 @@ private fun LocalPagesPage(
                 TextButton(onClick = { batchPage = null }) { Text("取消") }
             }
         )
+        if (showFolderPicker) {
+            FolderTreePickerDialog(
+                folders = folders,
+                selectedId = folderId,
+                onDismiss = { showFolderPicker = false },
+                onSelect = { folderId = it }
+            )
+        }
     }
+}
+
+/** 书签文件夹的完整路径，例如：根目录 / 学习 / 前端 */
+private fun folderPathLabel(
+    folders: List<com.qingguang.browser.data.BookmarkFolder>,
+    id: Long
+): String {
+    if (id == 0L) return "根目录"
+    val byId = folders.associateBy { it.id }
+    val names = mutableListOf<String>()
+    var current = byId[id]
+    var guard = 0
+    while (current != null && guard++ < 32) {
+        names.add(0, current.name.ifBlank { "未命名文件夹" })
+        current = byId[current.parentId]
+    }
+    return (listOf("根目录") + names).joinToString(" / ")
+}
+
+/** 结构化文件夹树选择器：可逐级进入子文件夹 */
+@Composable
+private fun FolderTreePickerDialog(
+    folders: List<com.qingguang.browser.data.BookmarkFolder>,
+    selectedId: Long,
+    onDismiss: () -> Unit,
+    onSelect: (Long) -> Unit
+) {
+    var stack by remember { mutableStateOf(listOf<Long>()) }
+    val currentId = stack.lastOrNull() ?: 0L
+    val children = folders
+        .filter { it.parentId == currentId }
+        .sortedBy { it.name }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("选择书签位置") },
+        text = {
+            Column(Modifier.heightIn(max = 380.dp)) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    listOf(0L to "根目录").forEach { (id, name) ->
+                        Text(
+                            name,
+                            fontSize = 12.sp,
+                            color = if (currentId == id) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .clickable { stack = emptyList() }
+                                .padding(vertical = 6.dp, horizontal = 4.dp)
+                        )
+                    }
+                    stack.forEachIndexed { index, id ->
+                        val folder = folders.firstOrNull { it.id == id }
+                        Icon(
+                            Icons.Filled.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            folder?.name?.ifBlank { "未命名" } ?: "?",
+                            fontSize = 12.sp,
+                            color = if (index == stack.lastIndex)
+                                MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .clickable { stack = stack.take(index + 1) }
+                                .padding(vertical = 6.dp, horizontal = 4.dp)
+                        )
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                LazyColumn(Modifier.heightIn(max = 300.dp)) {
+                    if (stack.isNotEmpty()) {
+                        item(key = "up") {
+                            Text(
+                                "↑ 返回上级",
+                                fontSize = 13.sp,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { stack = stack.dropLast(1) }
+                                    .padding(vertical = 10.dp, horizontal = 4.dp)
+                            )
+                        }
+                    }
+                    items(children, key = { it.id }) { folder ->
+                        val childCount = folders.count { it.parentId == folder.id }
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { stack = stack + folder.id }
+                                .padding(vertical = 10.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Filled.FolderOpen,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                folder.name.ifBlank { "未命名文件夹" },
+                                fontSize = 13.sp,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (childCount > 0) {
+                                Text("$childCount 个文件夹", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Icon(
+                                Icons.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.outline,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                    if (children.isEmpty()) {
+                        item(key = "empty") {
+                            Text(
+                                "这里没有子文件夹，可直接选择当前位置。",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 12.dp, horizontal = 4.dp)
+                            )
+                        }
+                    }
+                }
+                if (selectedId != 0L) {
+                    Text(
+                        "已选：" + folderPathLabel(folders, selectedId),
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onSelect(currentId)
+                onDismiss()
+            }) { Text("导入到此处") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
 }
 
 @Composable
@@ -1278,16 +1435,15 @@ private fun HomeExtraPage(
     Column(
         Modifier
             .fillMaxSize()
-            .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = SHORTCUT_BOTTOM_GAP)
+            .padding(start = 20.dp, end = 20.dp, bottom = SHORTCUT_BOTTOM_GAP),
+        verticalArrangement = Arrangement.Bottom
     ) {
-        ShortcutHeader(pageLabel = pageName(pageIndex), onShowHint = onShowHint)
-        Spacer(Modifier.height(14.dp))
         if (items.isEmpty()) {
             Text(
                 "这一页还没有快捷入口。长按第一页的图标，选择「移入其他页」即可放到这里。",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 12.dp)
+                modifier = Modifier.padding(bottom = 14.dp)
             )
         }
         HomeShortcutGrid(
@@ -1298,7 +1454,9 @@ private fun HomeExtraPage(
             onLongPress = onLongPress,
             onMerge = onMerge,
             onMoveToSlot = onMoveToSlot,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(SHORTCUT_ROW_PITCH * 7)
         )
     }
 }

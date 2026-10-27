@@ -220,12 +220,22 @@ class BackupManager(
     /** 从备份恢复 Cookie、localStorage 与 IndexedDB。回调在主线程。 */
     fun restore(webView: WebView, info: BackupInfo, onResult: (Boolean, String) -> Unit) {
         val text = runCatching { readText(info) }.getOrNull()
-        val payload = text?.let { runCatching { JSONObject(it) }.getOrNull() }
-        if (payload == null) {
+        if (text == null) {
             onResult(false, "备份文件已损坏或无法读取")
             return
         }
-        val url = payload.optString("url")
+        restoreFromText(webView, text, onResult)
+    }
+
+    /** 从 JSON 文本恢复（同时兼容「站点数据导出」生成的 JSON）。回调在主线程。 */
+    fun restoreFromText(webView: WebView, text: String, onResult: (Boolean, String) -> Unit) {
+        val payload = runCatching { JSONObject(text) }.getOrNull()
+        if (payload == null) {
+            onResult(false, "文件不是有效的 JSON 站点数据")
+            return
+        }
+        // 站点数据导出的 localStorage 也可能是字符串形式，统一兜底
+        val url = payload.optString("url").ifBlank { webView.url.orEmpty() }
         val cookies = payload.optString("cookies")
         val localStorage = payload.optJSONObject("localStorage")?.toString() ?: "{}"
         val indexedDb = payload.optJSONArray("indexedDB")?.toString() ?: "[]"

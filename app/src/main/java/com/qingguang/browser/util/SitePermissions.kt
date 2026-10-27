@@ -14,7 +14,9 @@ data class SitePermission(
     val allowPopup: Boolean = true,
     val allowDownload: Boolean = true,
     val allowJs: Boolean = true,
-    val allowImages: Boolean = true
+    val allowImages: Boolean = true,
+    /** 夜间网页调色：-1 跟随全局，0 强制关闭，1 强制开启 */
+    val nightMode: Int = -1
 ) {
     fun summary(): String = buildList {
         if (allowGeo) add("定位") else add("禁定位")
@@ -23,6 +25,7 @@ data class SitePermission(
         if (allowDownload) add("下载") else add("禁下载")
         if (allowJs) add("JS") else add("禁JS")
         if (allowImages) add("图片") else add("禁图片")
+        if (nightMode == 1) add("夜间调色") else if (nightMode == 0) add("禁夜间调色")
     }.joinToString(" · ")
 }
 
@@ -44,7 +47,8 @@ object SitePermissionStore {
                     allowPopup = obj.optBoolean("allowPopup", true),
                     allowDownload = obj.optBoolean("allowDownload", true),
                     allowJs = obj.optBoolean("allowJs", true),
-                    allowImages = obj.optBoolean("allowImages", true)
+                    allowImages = obj.optBoolean("allowImages", true),
+                    nightMode = obj.optInt("nightMode", -1)
                 )
             }
         }.getOrDefault(emptyList())
@@ -61,15 +65,34 @@ object SitePermissionStore {
                 put("allowDownload", permission.allowDownload)
                 put("allowJs", permission.allowJs)
                 put("allowImages", permission.allowImages)
+                put("nightMode", permission.nightMode)
             })
         }
         settings.sitePermissionsJson = array.toString()
     }
 
+    /**
+     * 查找站点策略：先精确匹配，再匹配通配条目（`.example.com` 覆盖其全部子域）。
+     * 未配置时返回 null。
+     */
+    fun find(settings: SettingsStore, host: String): SitePermission? {
+        val key = host.trim().lowercase()
+        if (key.isBlank()) return null
+        val list = load(settings)
+        list.firstOrNull { it.host == key }?.let { return it }
+        val wildcard = list.firstOrNull { entry ->
+            val raw = entry.host
+            if (!raw.startsWith(".") && !raw.startsWith("*.")) return@firstOrNull false
+            val suffix = raw.removePrefix("*").removePrefix(".")
+            key == suffix || key.endsWith(".$suffix")
+        }
+        return wildcard?.copy(host = key)
+    }
+
     /** 取站点策略；未单独设置时返回默认全允许 */
     fun policyFor(settings: SettingsStore, host: String): SitePermission {
         val key = host.trim().lowercase()
-        return load(settings).firstOrNull { it.host == key } ?: SitePermission(host = key)
+        return find(settings, key) ?: SitePermission(host = key)
     }
 
     /** 写入或更新一条站点策略 */

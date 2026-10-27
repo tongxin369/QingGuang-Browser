@@ -16,6 +16,7 @@ import android.media.AudioAttributes
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Base64
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
@@ -47,6 +48,7 @@ import com.qingguang.browser.data.OfflinePage
 import com.qingguang.browser.util.BackupInfo
 import com.qingguang.browser.util.DownloadNotifier
 import com.qingguang.browser.util.SettingsStore
+import com.qingguang.browser.util.SitePermission
 import com.qingguang.browser.util.SitePermissionStore
 import com.qingguang.browser.util.hostOf
 import kotlinx.coroutines.CoroutineScope
@@ -285,8 +287,14 @@ class BrowserController(private val activity: Activity) {
 
     fun goHome() {
         stopReadAloud()
-        // 回到首页只切换显示，不再新建空白标签，避免反复进页面后标签越积越多
-        if (currentTab() == null) newTabInternal()
+        // 从网页返回首页：关闭当前网页标签，避免标签越积越多
+        val tab = currentTab()
+        val url = tab?.webView?.url
+        val hasPage = !url.isNullOrBlank() && !url.startsWith("about:")
+        if (tab != null && hasPage && !tab.locked) {
+            closeTab(tab.id)
+        }
+        if (tabs.isEmpty()) newTabInternal()
         showHome = true
         pageThemeColor = null
         renderContainer()
@@ -309,6 +317,8 @@ class BrowserController(private val activity: Activity) {
                     )
                 )
             }
+            // 首页覆盖在容器之上，WebView 必须一起隐藏，否则首页背景会透出网页残影
+            tab.webView.visibility = if (showHome) View.INVISIBLE else View.VISIBLE
         }
     }
 
@@ -329,12 +339,41 @@ class BrowserController(private val activity: Activity) {
         refresh()
     }
 
+    /** 本次会话临时授权的站点（关闭应用即失效），优先级高于持久配置 */
+    private val sessionGrants = mutableSetOf<String>()
+
+    fun sessionGrantedHosts(): Set<String> = sessionGrants.toSet()
+
+    /** 仅本次会话允许该站点全部权限，并立即重新加载 */
+    fun grantSessionPermissions(host: String) {
+        val key = host.trim().lowercase()
+        if (key.isBlank()) return
+        sessionGrants.add(key)
+        val tab = currentTab() ?: return
+        val url = tab.webView.url ?: return
+        applySitePolicy(tab.webView, url)
+        tab.webView.reload()
+        audit("权限", "临时放行", key, "本次会话全部允许")
+    }
+
+    fun revokeSessionPermissions(host: String) {
+        sessionGrants.remove(host.trim().lowercase())
+        val tab = currentTab() ?: return
+        tab.webView.reload()
+    }
+
+    private fun policyForHost(host: String): SitePermission {
+        val key = host.trim().lowercase()
+        return if (key in sessionGrants) SitePermission(host = key)
+        else SitePermissionStore.policyFor(app.settings, key)
+    }
+
     /** 按站点权限矩阵设置脚本/图片开关（未配置的站点保持默认允许） */
     private fun applySitePolicy(webView: WebView, url: String) {
         if (!url.startsWith("http")) return
         val host = hostOf(url)
         if (host.isBlank()) return
-        val policy = SitePermissionStore.policyFor(app.settings, host)
+        val policy = policyForHost(host)
         webView.settings.javaScriptEnabled = policy.allowJs
         webView.settings.blockNetworkImage = !policy.allowImages
         if (!policy.allowJs) audit("脚本", "禁用", host, url)
@@ -479,7 +518,19 @@ class BrowserController(private val activity: Activity) {
                         java.io.ByteArrayInputStream(ByteArray(0))
                     )
                 }
-                return assetLoader.shouldInterceptRequest(request.url)
+                val response = assetLoader.shouldInterceptRequest(request.url)
+                if (response != null && response.data != null) {
+                    // 本地网页用 <script type="module"> 时，WebView 严格校验 MIME，
+                    // 若被当成 text/plain 会拒绝执行，导致展开列表等交互失效
+                    val mime = response.mimeType
+                    if (mime == null || mime == "text/plain" || mime == "application/octet-stream") {
+                        val fixed = mimeForPath(request.url.path.orEmpty())
+                        if (fixed != null) {
+                            return WebResourceResponse(fixed, response.encoding ?: "utf-8", response.data)
+                        }
+                    }
+                }
+                return response
             }
 
             override fun shouldOverrideUrlLoading(
@@ -504,6 +555,7 @@ class BrowserController(private val activity: Activity) {
                 // 提前接管 URL.createObjectURL，缓存网页生成的 Blob，避免导出下载时 fetch 被 CSP 拦截
                 view.evaluateJavascript(BLOB_STORE_JS, null)
                 // 夜间调色尽早注入，减少首屏白闪与延迟感
+                applyDarkMode(view)
                 injectNightCss(view)
                 refresh()
             }
@@ -556,7 +608,7 @@ class BrowserController(private val activity: Activity) {
                 resultMsg: android.os.Message
             ): Boolean {
                 val host = hostOf(view.url ?: "")
-                val policy = SitePermissionStore.policyFor(app.settings, host)
+                val policy = policyForHost(host)
                 if (app.settings.adBlock || !policy.allowPopup) {
                     toast("已拦截网页弹窗")
                     audit("弹窗", "拦截", host, view.url ?: "")
@@ -567,7 +619,7 @@ class BrowserController(private val activity: Activity) {
 
             override fun onPermissionRequest(request: android.webkit.PermissionRequest) {
                 val host = hostOf(request.origin.toString())
-                val policy = SitePermissionStore.policyFor(app.settings, host)
+                val policy = policyForHost(host)
                 if (policy.allowCamera) {
                     request.grant(request.resources)
                     audit("摄像头/麦克风", "允许", host, request.origin.toString())
@@ -582,7 +634,7 @@ class BrowserController(private val activity: Activity) {
                 callback: GeolocationPermissions.Callback
             ) {
                 val host = hostOf(origin)
-                if (!SitePermissionStore.policyFor(app.settings, host).allowGeo) {
+                if (!policyForHost(host).allowGeo) {
                     callback.invoke(origin, false, true)
                     audit("定位", "拒绝", host, origin)
                     return
@@ -620,16 +672,11 @@ class BrowserController(private val activity: Activity) {
     }
 
     private fun applyDarkMode(webView: WebView) {
+        val night = nightEnabledFor(webView.url)
+        webView.setBackgroundColor(if (night) 0xFF101214.toInt() else 0x00000000)
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) return
         // 与应用主题合并：浅色=不暗化，深色/跟随系统=暗化；夜间同时注入调色 CSS
-        val allowed = when (app.settings.appTheme) {
-            1 -> false
-            else -> nightInvertEnabled()
-        }
-        WebSettingsCompat.setAlgorithmicDarkeningAllowed(webView.settings, allowed)
-        webView.setBackgroundColor(
-            if (nightInvertEnabled()) 0xFF101214.toInt() else 0x00000000
-        )
+        WebSettingsCompat.setAlgorithmicDarkeningAllowed(webView.settings, night)
     }
 
     /** 统一主题：夜间 = 应用深色 + 网页注入深色调色（跟随系统时按系统深色判断） */
@@ -638,9 +685,22 @@ class BrowserController(private val activity: Activity) {
         else -> isSystemDark()
     }
 
+    /** 单个站点可覆盖全局夜间调色：1 强制开、0 强制关、-1 跟随全局 */
+    private fun nightEnabledFor(url: String?): Boolean {
+        val global = nightInvertEnabled()
+        val host = hostOf(url ?: "")
+        if (host.isBlank()) return global
+        val policy = SitePermissionStore.find(app.settings, host) ?: return global
+        return when (policy.nightMode) {
+            1 -> true
+            0 -> false
+            else -> global
+        }
+    }
+
     /** 夜间调色：先铺深色底，再尽早注入样式，减少白闪与延迟 */
     private fun injectNightCss(view: WebView) {
-        if (nightInvertEnabled()) {
+        if (nightEnabledFor(view.url)) {
             view.setBackgroundColor(0xFF101214.toInt())
             view.evaluateJavascript(NIGHT_CSS_JS, null)
         } else {
@@ -813,6 +873,17 @@ class BrowserController(private val activity: Activity) {
         conn.inputStream.use { it.readBytes() }
     }.getOrNull()
 
+    private fun mimeForPath(path: String): String? =
+        when (path.substringAfterLast('.', "").lowercase()) {
+            "js", "mjs" -> "text/javascript"
+            "css" -> "text/css"
+            "json" -> "application/json"
+            "html", "htm" -> "text/html"
+            "svg" -> "image/svg+xml"
+            "wasm" -> "application/wasm"
+            else -> null
+        }
+
     fun openOfflinePage(page: OfflinePage) {
         loadUrl("https://appassets.androidplatform.net/files/offline/${page.dirName}/index.html")
     }
@@ -905,7 +976,7 @@ class BrowserController(private val activity: Activity) {
         mimetype: String
     ) {
         val host = if (url.startsWith("http")) hostOf(url) else currentUrl
-        val policy = SitePermissionStore.policyFor(app.settings, host)
+        val policy = policyForHost(host)
         if (!policy.allowDownload) {
             toast("该站点下载权限已被关闭，可在「权限中心」开启")
             audit("下载", "拒绝", host, url)
@@ -1234,6 +1305,22 @@ class BrowserController(private val activity: Activity) {
         app.backups.backupSite(tab.webView, url, tab.webView.title ?: url, callback)
     }
 
+    /** 从 JSON 文件恢复当前站点的 Cookie、localStorage 与 IndexedDB */
+    fun restoreSiteData(json: String, callback: (Boolean, String) -> Unit) {
+        val tab = currentTab()
+        if (tab == null) {
+            callback(false, "当前没有打开的页面")
+            return
+        }
+        val url = tab.webView.url
+        if (url.isNullOrBlank() || url.startsWith("about:")) {
+            callback(false, "请先打开要恢复数据的网页")
+            return
+        }
+        audit("站点数据", "恢复", hostOf(url), "从 JSON 文件恢复")
+        app.backups.restoreFromText(tab.webView, json, callback)
+    }
+
     /** 导出当前站点的 localStorage 与 IndexedDB 为 JSON，保存到下载目录 */
     fun exportSiteData() {
         val tab = currentTab() ?: run {
@@ -1383,10 +1470,7 @@ class BrowserController(private val activity: Activity) {
         if (chunks.isEmpty()) return
         val engine = tts ?: return
         engine.stop()
-        val langStatus = engine.setLanguage(Locale.getDefault())
-        if (langStatus == TextToSpeech.LANG_MISSING_DATA ||
-            langStatus == TextToSpeech.LANG_NOT_SUPPORTED
-        ) {
+        if (!applyTtsLanguage(engine)) {
             isSpeaking = false
             toast("语音引擎缺少中文语音数据，请在系统设置中下载语音包")
             return
@@ -1416,6 +1500,8 @@ class BrowserController(private val activity: Activity) {
         }
     }
 
+    private var ttsInitAttempt = 0
+
     private fun ensureTts() {
         if (tts != null) {
             if (ttsReady) {
@@ -1425,26 +1511,40 @@ class BrowserController(private val activity: Activity) {
             }
             return
         }
-        tts = TextToSpeech(activity) { status ->
+        ttsInitAttempt = 0
+        createTts()
+    }
+
+    private fun createTts() {
+        val listener = TextToSpeech.OnInitListener { status ->
             if (status != TextToSpeech.SUCCESS) {
-                ttsReady = false
+                tts?.shutdown()
                 tts = null
-                pendingReadText = null
-                isSpeaking = false
-                toast("系统语音引擎不可用，请在系统设置 → 无障碍 → 文字转语音中启用引擎")
-                return@TextToSpeech
+                ttsReady = false
+                if (ttsInitAttempt < 1) {
+                    // 部分机型的语音引擎首次连接会瞬时失败，稍后重试一次
+                    ttsInitAttempt++
+                    android.os.Handler(android.os.Looper.getMainLooper())
+                        .postDelayed({ createTts() }, 900)
+                } else {
+                    pendingReadText = null
+                    isSpeaking = false
+                    toast(
+                        "语音引擎初始化失败。红米/MIUI 请在 设置 → 无障碍 → 文字转语音 中选择「小米语音引擎」，" +
+                            "或安装「Google 文字转语音」后重试"
+                    )
+                }
+                return@OnInitListener
             }
-            val engine = tts ?: return@TextToSpeech
-            val langStatus = engine.setLanguage(Locale.getDefault())
-            if (langStatus == TextToSpeech.LANG_MISSING_DATA ||
-                langStatus == TextToSpeech.LANG_NOT_SUPPORTED
-            ) {
+            val engine = tts ?: return@OnInitListener
+            if (!applyTtsLanguage(engine)) {
                 ttsReady = false
+                engine.shutdown()
                 tts = null
                 pendingReadText = null
                 isSpeaking = false
-                toast("语音引擎缺少中文语音数据，请在系统设置中下载语音包")
-                return@TextToSpeech
+                toast("语音引擎缺少中文语音数据，请在 设置 → 无障碍 → 文字转语音 中下载中文语音包")
+                return@OnInitListener
             }
             runCatching {
                 engine.setAudioAttributes(
@@ -1470,7 +1570,7 @@ class BrowserController(private val activity: Activity) {
                 override fun onError(utteranceId: String?) {
                     activity.runOnUiThread {
                         isSpeaking = false
-                        toast("朗读中断，请检查语音引擎")
+                        toast("朗读中断，请检查系统语音引擎")
                     }
                 }
             })
@@ -1479,6 +1579,22 @@ class BrowserController(private val activity: Activity) {
             if (!pending.isNullOrBlank()) {
                 activity.runOnUiThread { speakChunks(splitForTts(pending)) }
             }
+        }
+        tts = TextToSpeech(activity, listener)
+    }
+
+    /** 依次尝试系统语言、简中、中文，避免部分引擎对 Locale 要求不同而误判不支持 */
+    private fun applyTtsLanguage(engine: TextToSpeech): Boolean {
+        val candidates = listOf(
+            Locale.getDefault(),
+            Locale.SIMPLIFIED_CHINESE,
+            Locale.CHINA,
+            Locale.CHINESE,
+            Locale.US
+        ).distinct()
+        return candidates.any { locale ->
+            val result = engine.setLanguage(locale)
+            result != TextToSpeech.LANG_MISSING_DATA && result != TextToSpeech.LANG_NOT_SUPPORTED
         }
     }
 
