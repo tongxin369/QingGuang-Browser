@@ -974,7 +974,10 @@ private fun MenuPanel(
             MenuItem.READ_ALOUD -> controller.toggleReadAloud()
             MenuItem.COPY_URL -> copyToClipboard(context, controller.currentUrl)
             MenuItem.SHARE -> shareUrl(context, controller.currentUrl)
-            MenuItem.DARK_TOGGLE -> ThemeController.set(context, if (isDark) 1 else 2)
+            MenuItem.DARK_TOGGLE -> {
+                ThemeController.set(context, if (isDark) 1 else 2)
+                controller.onThemeModeChanged()
+            }
             MenuItem.DESKTOP_MODE -> controller.toggleDesktopMode()
             MenuItem.SCREEN_ORIENTATION -> onScreenOrientation()
             MenuItem.READER_MODE -> controller.toggleReaderMode()

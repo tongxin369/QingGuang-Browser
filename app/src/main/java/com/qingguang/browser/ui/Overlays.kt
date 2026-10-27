@@ -56,6 +56,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Remove
@@ -510,7 +511,9 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    state = bookmarkListState
+                    state = bookmarkListState,
+                    // 拖动时禁用列表滚动，避免滚动手势把长按拖动“抢走”导致脱手
+                    userScrollEnabled = dragId == null
                 ) {
                     items(shownFolders, key = { "f-${it.id}" }) { folder ->
                         BookmarkFolderRow(
@@ -735,10 +738,12 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
             confirmButton = {
                 TextButton(
                     onClick = {
+                        val folderName = newFolderName.trim()
+                        if (folderName.isBlank()) return@TextButton
                         scope.launch {
                             app.database.bookmarkFolderDao().insert(
                                 com.qingguang.browser.data.BookmarkFolder(
-                                    name = newFolderName.trim(),
+                                    name = folderName,
                                     parentId = newFolderParent
                                 )
                             )
@@ -1905,6 +1910,7 @@ private fun SiteBackupSection(controller: BrowserController) {
     var backups by remember { mutableStateOf<List<BackupInfo>>(emptyList()) }
     var pendingDelete by remember { mutableStateOf<BackupInfo?>(null) }
     var pendingRestore by remember { mutableStateOf<BackupInfo?>(null) }
+    var showScopeInfo by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var autoBackup by remember { mutableStateOf(app.settings.autoBackup) }
     var locationLabel by remember { mutableStateOf(app.backups.locationLabel()) }
@@ -1995,12 +2001,29 @@ private fun SiteBackupSection(controller: BrowserController) {
                     }
                 )
             }
-            Text(
-                "备份范围：Cookie + localStorage。同一站点只保留最新一份，旧备份自动删除。恢复会覆盖当前站点的对应数据并刷新页面。",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 8.dp)
-            )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "备份范围：Cookie、localStorage、IndexedDB",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(
+                    onClick = { showScopeInfo = true },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Info,
+                        contentDescription = "备份范围说明",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
         HorizontalDivider()
         if (backups.isEmpty()) {
@@ -2054,12 +2077,36 @@ private fun SiteBackupSection(controller: BrowserController) {
         )
     }
 
+    if (showScopeInfo) {
+        AlertDialog(
+            onDismissRequest = { showScopeInfo = false },
+            title = { Text("备份范围说明") },
+            text = {
+                Column {
+                    Text("备份包含以下站点数据：", fontWeight = FontWeight.Medium)
+                    Text("· Cookie：登录态与会话")
+                    Text("· localStorage：键值对缓存")
+                    Text("· IndexedDB：库结构（objectStore、keyPath、自增、索引）与全部记录")
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "同一站点只保留最新一份，旧备份自动删除。恢复时会覆盖当前站点对应的 Cookie、localStorage 与 IndexedDB，并刷新页面。",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showScopeInfo = false }) { Text("知道了") }
+            }
+        )
+    }
+
     pendingRestore?.let { info ->
         AlertDialog(
             onDismissRequest = { pendingRestore = null },
             title = { Text("恢复备份？") },
             text = {
-                Text("会用「${info.host}」的备份覆盖当前页面站点的 Cookie 与 localStorage，并刷新页面。请确认当前打开的是对应网站。")
+                Text("会用「${info.host}」的备份覆盖当前页面站点的 Cookie、localStorage 与 IndexedDB，并刷新页面。请确认当前打开的是对应网站。")
             },
             confirmButton = {
                 TextButton(onClick = {

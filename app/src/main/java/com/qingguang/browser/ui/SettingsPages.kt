@@ -264,21 +264,29 @@ private fun AppearanceSettings(controller: BrowserController) {
     val app = context.applicationContext as App
     var appTheme by remember { mutableStateOf(app.settings.appTheme) }
     var follow by remember { mutableStateOf(app.settings.followPageTheme) }
-    var webDark by remember { mutableStateOf(app.settings.darkMode) }
 
-    SettingsGroup("应用主题")
+    SettingsGroup("日间 / 夜间模式（应用与网页统一）")
     SettingsRadioRow("跟随系统", appTheme == 0) {
         appTheme = 0
         ThemeController.set(context, 0)
+        controller.onThemeModeChanged()
     }
-    SettingsRadioRow("浅色", appTheme == 1) {
+    SettingsRadioRow("日间模式", appTheme == 1) {
         appTheme = 1
         ThemeController.set(context, 1)
+        controller.onThemeModeChanged()
     }
-    SettingsRadioRow("深色", appTheme == 2) {
+    SettingsRadioRow("夜间模式（网页自动调色）", appTheme == 2) {
         appTheme = 2
         ThemeController.set(context, 2)
+        controller.onThemeModeChanged()
     }
+    Text(
+        "夜间模式会同时切换应用配色与菜单图标，并给网页注入深色调色；无需再单独设置网页深浅色。",
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp)
+    )
 
     SettingsGroup("工具栏")
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -286,24 +294,6 @@ private fun AppearanceSettings(controller: BrowserController) {
         follow = value
         app.settings.followPageTheme = value
         controller.applyFollowPageTheme(value)
-    }
-
-    SettingsGroup("网页")
-    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-    SettingsRadioRow("跟随系统深浅色", webDark == 0) {
-        webDark = 0
-        app.settings.darkMode = 0
-        controller.applySettings()
-    }
-    SettingsRadioRow("强制深色网页", webDark == 1) {
-        webDark = 1
-        app.settings.darkMode = 1
-        controller.applySettings()
-    }
-    SettingsRadioRow("始终保持浅色网页", webDark == 2) {
-        webDark = 2
-        app.settings.darkMode = 2
-        controller.applySettings()
     }
 }
 
@@ -330,7 +320,6 @@ private fun BrowsingSettings(controller: BrowserController) {
     var customEngine by remember { mutableStateOf(app.settings.searchEngine) }
     var readerSize by remember { mutableStateOf(app.settings.readerFontSize) }
     var readerLine by remember { mutableStateOf(app.settings.readerLinePercent) }
-    var nightWeb by remember { mutableStateOf(app.settings.nightWeb) }
     var adExtra by remember { mutableStateOf(app.settings.adBlockExtraHosts) }
 
     SettingsGroup("搜索引擎")
@@ -403,11 +392,6 @@ private fun BrowsingSettings(controller: BrowserController) {
     SettingsSwitchRow("电脑模式（桌面版网页）", desktop) { value ->
         desktop = value
         if (app.settings.desktopMode != value) controller.toggleDesktopMode()
-    }
-    SettingsSwitchRow("夜间网页调色（强制深色）", nightWeb) { value ->
-        nightWeb = value
-        app.settings.nightWeb = value
-        controller.reload()
     }
 
     SettingsGroup("屏幕方向")

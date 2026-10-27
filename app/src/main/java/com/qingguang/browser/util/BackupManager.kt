@@ -28,7 +28,7 @@ data class BackupInfo(
 
 /**
  * 站点数据备份。
- * 备份内容：Cookie + localStorage（IndexedDB 体积大且导出复杂，后续版本补充）。
+ * 备份内容：Cookie + localStorage + IndexedDB（库结构、索引与全部记录）。
  * 备份目录可以是应用私有目录（默认），也可以是用户通过 SAF 指定的任意文件夹。
  * 同一站点只保留最新一份，旧文件自动删除。
  */
@@ -125,7 +125,29 @@ class BackupManager(
 
     private fun isGlobalName(name: String): Boolean = name.startsWith(GLOBAL_PREFIX)
 
-    /** 导出当前页面的 Cookie 与 localStorage。回调在主线程。 */
+    /** 等待网页回报 IndexedDB 导出结果的回调（同一时间只允许一个备份任务） */
+    private var pendingIndexedDb: ((String) -> Unit)? = null
+    private var pendingRestoreDone: ((Boolean, String) -> Unit)? = null
+
+    /** 由网页 JS 调用：IndexedDB 导出完成 */
+    fun deliverIndexedDb(raw: String?) {
+        val callback = pendingIndexedDb ?: return
+        pendingIndexedDb = null
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            callback(raw ?: "[]")
+        }
+    }
+
+    /** 由网页 JS 调用：IndexedDB 恢复完成 */
+    fun deliverIndexedDbRestored() {
+        val callback = pendingRestoreDone ?: return
+        pendingRestoreDone = null
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            callback(true, "已恢复 Cookie、localStorage 与 IndexedDB，正在刷新页面")
+        }
+    }
+
+    /** 导出当前页面的 Cookie、localStorage 与 IndexedDB。回调在主线程。 */
     fun backupSite(
         webView: WebView,
         url: String,
@@ -138,49 +160,64 @@ class BackupManager(
             val safeHost = host.replace(Regex("[^A-Za-z0-9.-]"), "_")
             val now = System.currentTimeMillis()
             val fileName = "$safeHost@$now.json"
-            val payload = JSONObject().apply {
-                put("version", 1)
-                put("url", url)
-                put("host", host)
-                put("title", title)
-                put("createdAt", now)
-                put("cookies", CookieManager.getInstance().getCookie(url) ?: "")
-                put("localStorage", runCatching { JSONObject(localStorageJson) }.getOrElse { JSONObject() })
-            }
-            runCatching {
-                val root = customRoot()
-                if (root != null) {
-                    val target = root.findFile(fileName)
-                        ?: root.createFile("application/json", fileName)
-                        ?: error("无法在所选目录创建文件")
-                    context.contentResolver.openOutputStream(target.uri)?.use {
-                        it.write(payload.toString().toByteArray(Charsets.UTF_8))
-                    } ?: error("无法写入所选目录")
-                    root.listFiles()
-                        .filter {
-                            it.isFile && it.name?.endsWith(".json") == true &&
-                                it.name != fileName &&
-                                it.name?.substringBefore("@") == safeHost
-                        }
-                        .forEach { it.delete() }
-                } else {
-                    val dir = defaultDir
-                    File(dir, fileName).writeText(payload.toString(), Charsets.UTF_8)
-                    dir.listFiles()?.filter {
-                        it.isFile && it.name.endsWith(".json") &&
-                            it.nameWithoutExtension.split("@").firstOrNull() == safeHost &&
-                            it.name != fileName
-                    }?.forEach { it.delete() }
+
+            fun write(indexedDbJson: String) {
+                val indexedDb = runCatching { org.json.JSONArray(indexedDbJson) }
+                    .getOrElse { org.json.JSONArray() }
+                val payload = JSONObject().apply {
+                    put("version", 2)
+                    put("url", url)
+                    put("host", host)
+                    put("title", title)
+                    put("createdAt", now)
+                    put("cookies", CookieManager.getInstance().getCookie(url) ?: "")
+                    put("localStorage", runCatching { JSONObject(localStorageJson) }.getOrElse { JSONObject() })
+                    put("indexedDB", indexedDb)
                 }
-            }.onSuccess {
-                onResult(true, "已备份到 ${locationLabel()} 下的 $fileName")
+                if (writeText(fileName, payload.toString())) {
+                    pruneOld(safeHost, fileName)
+                    onResult(
+                        true,
+                        "已备份 Cookie、localStorage 与 ${indexedDb.length()} 个 IndexedDB 库到 ${locationLabel()}/$fileName"
+                    )
+                } else {
+                    onResult(false, "备份失败：无法写入备份目录")
+                }
+            }
+
+            pendingIndexedDb = { indexedDbJson -> write(indexedDbJson) }
+            runCatching {
+                webView.evaluateJavascript(EXPORT_INDEXED_DB_JS, null)
             }.onFailure {
-                onResult(false, "备份失败：${it.message}")
+                pendingIndexedDb = null
+                write("[]")
             }
         }
     }
 
-    /** 从备份恢复 Cookie 与 localStorage 到指定 WebView。回调在主线程。 */
+    /** 删除同一站点的旧备份，只保留最新一份 */
+    private fun pruneOld(safeHost: String, keepName: String) {
+        val root = customRoot()
+        if (root != null) {
+            root.listFiles()
+                .filter {
+                    it.isFile && it.name?.endsWith(".json") == true &&
+                        it.name != keepName &&
+                        it.name?.substringBefore("@") == safeHost
+                }
+                .forEach { it.delete() }
+        } else {
+            defaultDir.listFiles()
+                ?.filter {
+                    it.isFile && it.name.endsWith(".json") &&
+                        it.nameWithoutExtension.split("@").firstOrNull() == safeHost &&
+                        it.name != keepName
+                }
+                ?.forEach { it.delete() }
+        }
+    }
+
+    /** 从备份恢复 Cookie、localStorage 与 IndexedDB。回调在主线程。 */
     fun restore(webView: WebView, info: BackupInfo, onResult: (Boolean, String) -> Unit) {
         val text = runCatching { readText(info) }.getOrNull()
         val payload = text?.let { runCatching { JSONObject(it) }.getOrNull() }
@@ -191,6 +228,7 @@ class BackupManager(
         val url = payload.optString("url")
         val cookies = payload.optString("cookies")
         val localStorage = payload.optJSONObject("localStorage")?.toString() ?: "{}"
+        val indexedDb = payload.optJSONArray("indexedDB")?.toString() ?: "[]"
 
         if (cookies.isNotBlank()) {
             val cookieManager = CookieManager.getInstance()
@@ -201,10 +239,20 @@ class BackupManager(
             cookieManager.flush()
         }
 
-        val script = RESTORE_LOCAL_STORAGE_JS.replace("__DATA__", JSONObject.quote(localStorage))
-        webView.evaluateJavascript(script) { result ->
-            webView.reload()
-            onResult(true, if (result.contains("ok")) "已恢复并刷新页面" else "已写入数据并刷新页面")
+        val localStorageScript = RESTORE_LOCAL_STORAGE_JS.replace("__DATA__", JSONObject.quote(localStorage))
+        webView.evaluateJavascript(localStorageScript) {
+            pendingRestoreDone = { success, message ->
+                webView.reload()
+                onResult(success, message)
+            }
+            val indexedDbScript = RESTORE_INDEXED_DB_JS.replace("__DATA__", JSONObject.quote(indexedDb))
+            runCatching {
+                webView.evaluateJavascript(indexedDbScript, null)
+            }.onFailure {
+                pendingRestoreDone = null
+                webView.reload()
+                onResult(true, "已恢复 Cookie 与 localStorage（IndexedDB 恢复失败），正在刷新页面")
+            }
         }
     }
 
@@ -241,6 +289,115 @@ class BackupManager(
         private const val RESTORE_LOCAL_STORAGE_JS =
             "(function(d){try{var o=JSON.parse(d);localStorage.clear();" +
                 "for(var k in o){localStorage.setItem(k,o[k]);}return 'ok';}catch(e){return 'err:'+e.message;}})('__DATA__')"
+
+        /** 导出全部 IndexedDB（库名、版本、对象仓库、索引、记录） */
+        private val EXPORT_INDEXED_DB_JS = """
+            (function(){
+              function report(list){ try{ QingGuangBackup.onIndexedDb(JSON.stringify(list)); }catch(e){} }
+              try{
+                function readStore(db,storeName){
+                  return new Promise(function(resolve){
+                    var info={name:storeName,keyPath:null,autoIncrement:false,indexes:[],records:[]};
+                    try{
+                      var tx=db.transaction(storeName,'readonly');
+                      var store=tx.objectStore(storeName);
+                      info.keyPath=store.keyPath||null;
+                      info.autoIncrement=!!store.autoIncrement;
+                      for(var i=0;i<store.indexNames.length;i++){
+                        var ix=store.index(store.indexNames[i]);
+                        info.indexes.push({name:ix.name,keyPath:ix.keyPath||null,unique:!!ix.unique,multiEntry:!!ix.multiEntry});
+                      }
+                      var req=store.getAll();
+                      req.onsuccess=function(){info.records=req.result||[];resolve(info);};
+                      req.onerror=function(){resolve(info);};
+                    }catch(e){resolve(null);}
+                  });
+                }
+                function readDB(item){
+                  return new Promise(function(resolve){
+                    var req;
+                    try{req=indexedDB.open(item.name);}catch(e){resolve(null);return;}
+                    req.onerror=function(){resolve(null);};
+                    req.onsuccess=function(){
+                      var db=req.result;
+                      var names=Array.prototype.slice.call(db.objectStoreNames);
+                      var out={name:db.name,version:db.version,stores:[]};
+                      if(!names.length){db.close();resolve(out);return;}
+                      Promise.all(names.map(function(s){return readStore(db,s);})).then(function(list){
+                        out.stores=list.filter(Boolean);
+                        db.close();
+                        resolve(out);
+                      }).catch(function(){db.close();resolve(out);});
+                    };
+                  });
+                }
+                var dbs=(indexedDB.databases?indexedDB.databases():Promise.resolve([]));
+                dbs.then(function(list){return Promise.all((list||[]).map(readDB));})
+                  .then(function(all){report((all||[]).filter(Boolean));})
+                  .catch(function(){report([]);});
+              }catch(e){report([]);}
+            })();
+        """.trimIndent()
+
+        /** 恢复 IndexedDB：重建库结构与索引后写回记录 */
+        private val RESTORE_INDEXED_DB_JS = """
+            (function(raw){
+              var list=[]; try{list=JSON.parse(raw)||[];}catch(e){list=[];}
+              function finish(){try{QingGuangBackup.onIndexedDbRestored();}catch(e){}}
+              if(!list.length){finish();return;}
+              var dbIndex=0;
+              function nextDb(){
+                if(dbIndex>=list.length){finish();return;}
+                var info=list[dbIndex++];
+                try{
+                  var del=indexedDB.deleteDatabase(info.name);
+                  del.onsuccess=del.onerror=del.onblocked=function(){openDb(info);};
+                }catch(e){nextDb();}
+              }
+              function openDb(info){
+                var req;
+                try{req=indexedDB.open(info.name, info.version||1);}catch(e){nextDb();return;}
+                req.onupgradeneeded=function(){
+                  var db=req.result;
+                  (info.stores||[]).forEach(function(s){
+                    try{
+                      if(db.objectStoreNames.contains(s.name)) return;
+                      var opts={};
+                      if(s.keyPath!==null&&s.keyPath!==undefined) opts.keyPath=s.keyPath;
+                      if(s.autoIncrement) opts.autoIncrement=true;
+                      var store=db.createObjectStore(s.name,opts);
+                      (s.indexes||[]).forEach(function(ix){
+                        try{
+                          if(!store.indexNames.contains(ix.name)){
+                            store.createIndex(ix.name, ix.keyPath, {unique:!!ix.unique, multiEntry:!!ix.multiEntry});
+                          }
+                        }catch(e){}
+                      });
+                    }catch(e){}
+                  });
+                };
+                req.onerror=function(){nextDb();};
+                req.onsuccess=function(){
+                  var db=req.result;
+                  var stores=info.stores||[];
+                  var si=0;
+                  function nextStore(){
+                    if(si>=stores.length){db.close();nextDb();return;}
+                    var s=stores[si++];
+                    if(!db.objectStoreNames.contains(s.name)){nextStore();return;}
+                    try{
+                      var tx=db.transaction(s.name,'readwrite');
+                      var st=tx.objectStore(s.name);
+                      (s.records||[]).forEach(function(r){try{st.put(r);}catch(e){}});
+                      tx.oncomplete=tx.onerror=tx.onabort=function(){nextStore();};
+                    }catch(e){nextStore();}
+                  }
+                  nextStore();
+                };
+              }
+              nextDb();
+            })('__DATA__')
+        """.trimIndent()
 
         fun formatTime(time: Long): String =
             SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(time))

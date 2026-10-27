@@ -28,12 +28,14 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -54,12 +56,15 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -73,6 +78,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -111,21 +117,21 @@ import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 /**
- * 图标网格规格（按参考图测算）：
- * 图标 52dp 保持不变；4 列时相邻图标横向净间距约 33dp。
- * 参考 X 浏览器（横向间距略大于纵向）与手机桌面（接近一致），
- * 取行距 104dp：图标 52 + 文字 6/15 + 纵向净间距约 31dp，与横向 33dp 基本一致。
+ * 图标网格规格（按参考图测算 + 底部基准对齐）：
+ * 图标 52dp 不变，4 列，横向净间距约 33dp，行距固定 104dp（纵向净间距约 31dp）。
+ * 每页的「预备格」从底部向上排，所有页最底行都压在距页面指示器 20dp 的同一条基准线上。
  */
 internal const val HOME_COLUMNS = 4
-private const val HOME_ROWS = 5
 private val SHORTCUT_ROW_PITCH = 104.dp
 /** 图标行底部到“三个点”指示器的统一基准间隔 */
 private val SHORTCUT_BOTTOM_GAP = 36.dp
 
-/** 所有快捷入口页统一容量：4 列 × 5 行 = 20 个，保证各页图标处于同一水平线 */
-internal const val HOME_PAGE_CAPACITY = HOME_COLUMNS * HOME_ROWS
+/** 第一页有搜索栏与功能入口，占 4 行；第二页起无多余组件，占 6 行 */
+internal const val HOME_PAGE_CAPACITY = 16
+internal const val EXTRA_PAGE_CAPACITY = 24
 
-internal fun homePageCapacity(page: Int): Int = HOME_PAGE_CAPACITY
+internal fun homePageCapacity(page: Int): Int =
+    if (page <= 0) HOME_PAGE_CAPACITY else EXTRA_PAGE_CAPACITY
 
 private val pageNames = arrayOf("第一页", "第二页", "第三页", "第四页", "第五页", "第六页")
 
@@ -659,15 +665,28 @@ private fun HomeMainPage(
             }
             .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = SHORTCUT_BOTTOM_GAP)
     ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "轻光",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onBackground,
-                modifier = Modifier.weight(1f)
-            )
-            IconButton(onClick = { onOpenOverlay(OverlayPage.SETTINGS) }) {
+        Box(Modifier.fillMaxWidth().height(36.dp)) {
+            Row(
+                Modifier.align(Alignment.Center),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.ic_launcher_foreground),
+                    contentDescription = null,
+                    modifier = Modifier.size(26.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "轻光",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+            }
+            IconButton(
+                onClick = { onOpenOverlay(OverlayPage.SETTINGS) },
+                modifier = Modifier.align(Alignment.CenterEnd)
+            ) {
                 Icon(
                     Icons.Filled.Settings,
                     contentDescription = "设置",
@@ -791,12 +810,21 @@ private fun LocalPagesPage(
     val localPages by app.database.localPageDao()
         .observeAll()
         .collectAsStateWithLifecycle(initialValue = emptyList())
+    val folders by app.database.bookmarkFolderDao()
+        .observeAll()
+        .collectAsStateWithLifecycle(initialValue = emptyList())
     var chooserPage by remember { mutableStateOf<LocalPage?>(null) }
     var chooserFiles by remember { mutableStateOf<List<String>>(emptyList()) }
     var batchPage by remember { mutableStateOf<LocalPage?>(null) }
     var batchCount by remember { mutableStateOf(0) }
 
-    fun batchImport(page: LocalPage, toBookmarks: Boolean, toHome: Boolean) {
+    fun batchImport(
+        page: LocalPage,
+        toBookmarks: Boolean,
+        bookmarkFolderId: Long = 0L,
+        toHome: Boolean,
+        homeStartPage: Int = 0
+    ) {
         scope.launch {
             val files = withContext(Dispatchers.IO) { app.localSites.htmlFiles(page) }
             if (files.isEmpty()) {
@@ -809,7 +837,8 @@ private fun LocalPagesPage(
                     app.database.bookmarkDao().insert(
                         Bookmark(
                             title = title.ifBlank { page.displayName },
-                            url = app.localSites.entryUrlFor(page, relative)
+                            url = app.localSites.entryUrlFor(page, relative),
+                            folderId = bookmarkFolderId
                         )
                     )
                 }
@@ -826,7 +855,7 @@ private fun LocalPagesPage(
                 files.forEach { relative ->
                     var targetPage = -1
                     var targetSlot = -1
-                    for (pg in 0 until totalPages) {
+                    for (pg in homeStartPage.coerceIn(0, (totalPages - 1).coerceAtLeast(0)) until totalPages) {
                         val slot = (0 until homePageCapacity(pg)).firstOrNull {
                             it !in (used[pg] ?: mutableSetOf())
                         }
@@ -927,24 +956,24 @@ private fun LocalPagesPage(
         }
     }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 24.dp)
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 24.dp)
     ) {
-        Text(
-            "本地网页",
-            fontSize = 20.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onBackground
-        )
-        Text(
-            "从主页向左滑进入；此页不放置快捷入口",
-            fontSize = 11.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 2.dp, bottom = 12.dp)
-        )
-        Surface(
+        item {
+            Text(
+                "本地网页",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Text(
+                "从主页向左滑进入；此页不放置快捷入口",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp, bottom = 12.dp)
+            )
+            Surface(
                 modifier = Modifier
                     .fillMaxWidth()
                     .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(16.dp)),
@@ -961,7 +990,7 @@ private fun LocalPagesPage(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            "本地网页",
+                            "导入本地网页",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onSurface
@@ -978,7 +1007,6 @@ private fun LocalPagesPage(
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         ActionChip("打开文件") {
-                            // 显式申请写权限，源码编辑器才能同步修改手机原文件
                             openFileLauncher.launch(
                                 Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                                     addCategory(Intent.CATEGORY_OPENABLE)
@@ -1008,63 +1036,87 @@ private fun LocalPagesPage(
                             controller.loadUrl(LocalSiteManager.ASSET_HOST + "/assets/sample/index.html")
                         },
                         contentPadding = PaddingValues(0.dp),
-                        modifier = Modifier.padding(top = 6.dp)
+                        modifier = Modifier.padding(top = 4.dp)
                     ) { Text("打开内置示例网页", fontSize = 13.sp) }
-                    if (localPages.isNotEmpty()) {
-                        Text(
-                            "已导入 ${localPages.size} 个本地网页（点击打开，点「换入口」切换子网页）",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 8.dp)
-                        )
-                        Column(
-                            Modifier
-                                .heightIn(max = 360.dp)
-                                .verticalScroll(rememberScrollState())
-                        ) {
-                            localPages.forEach { page ->
-                                Row(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .clickable { openLocalPage(page) }
-                                        .padding(vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text(
-                                            page.displayName,
-                                            fontSize = 13.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Text(
-                                            page.entryUrl.substringAfterLast('/'),
-                                            fontSize = 11.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    if (page.sourceKind == "tree") {
-                                        TextButton(onClick = { showEntryChooser(page) }) {
-                                            Text("换入口", fontSize = 12.sp)
-                                        }
-                                        TextButton(onClick = {
-                                            scope.launch {
-                                                batchCount = withContext(Dispatchers.IO) {
-                                                    app.localSites.htmlFiles(page).size
-                                                }
-                                                batchPage = page
-                                            }
-                                        }) { Text("批量导入", fontSize = 12.sp) }
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
             }
+            Text(
+                "已导入 ${localPages.size} 个本地网页",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(top = 18.dp, bottom = 2.dp)
+            )
+            Text(
+                "点击整行打开；「换入口」切换该文件夹的默认子网页；「批量导入」可一次导入全部 HTML。",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
+        }
+        if (localPages.isEmpty()) {
+            item {
+                Text(
+                    "还没有导入本地网页。上方「打开文件」导入单个网页，「打开文件夹」导入整站。",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 16.dp)
+                )
+            }
+        } else {
+            items(localPages, key = { it.siteId }) { page ->
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                ) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { openLocalPage(page) }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                page.displayName,
+                                fontSize = 14.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                page.entryUrl.substringAfterLast('/'),
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (page.sourceKind == "tree") {
+                            TextButton(onClick = { showEntryChooser(page) }) {
+                                Text("换入口", fontSize = 12.sp)
+                            }
+                            TextButton(onClick = {
+                                scope.launch {
+                                    batchCount = withContext(Dispatchers.IO) {
+                                        app.localSites.htmlFiles(page).size
+                                    }
+                                    batchPage = page
+                                }
+                            }) { Text("批量导入", fontSize = 12.sp) }
+                        } else {
+                            Text(
+                                "单个文件",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
+        }
     }
 
     chooserPage?.let { page ->
@@ -1107,35 +1159,104 @@ private fun LocalPagesPage(
     }
 
     batchPage?.let { page ->
+        var toBookmarks by remember(page) { mutableStateOf(true) }
+        var toHome by remember(page) { mutableStateOf(false) }
+        var folderId by remember(page) { mutableStateOf(0L) }
+        var homeStart by remember(page) { mutableStateOf(0) }
         AlertDialog(
             onDismissRequest = { batchPage = null },
             title = { Text("批量导入本地网页") },
             text = {
-                Text(
-                    "将「${page.displayName}」中的 $batchCount 个 HTML 文件批量导入到：",
-                    fontSize = 13.sp
-                )
+                Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                    Text(
+                        "将「${page.displayName}」中的 $batchCount 个 HTML 文件批量导入。",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    SettingsSwitchRowInline("同时导入到书签", toBookmarks) { toBookmarks = it }
+                    if (toBookmarks) {
+                        Text("书签位置", fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            FilterChip(
+                                selected = folderId == 0L,
+                                onClick = { folderId = 0L },
+                                label = { Text("根目录", fontSize = 11.sp) }
+                            )
+                            folders.forEach { folder ->
+                                FilterChip(
+                                    selected = folderId == folder.id,
+                                    onClick = { folderId = folder.id },
+                                    label = {
+                                        Text(
+                                            folder.name.ifBlank { "未命名文件夹" },
+                                            fontSize = 11.sp,
+                                            maxLines = 1
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    SettingsSwitchRowInline("同时导入到首页快捷入口", toHome) { toHome = it }
+                    if (toHome) {
+                        Text("起始页", fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            (0 until totalPages).forEach { pg ->
+                                FilterChip(
+                                    selected = homeStart == pg,
+                                    onClick = { homeStart = pg },
+                                    label = { Text(pageName(pg), fontSize = 11.sp) }
+                                )
+                            }
+                        }
+                    }
+                }
             },
             confirmButton = {
-                Row {
-                    TextButton(onClick = {
+                TextButton(
+                    enabled = toBookmarks || toHome,
+                    onClick = {
                         batchPage = null
-                        batchImport(page, toBookmarks = true, toHome = false)
-                    }) { Text("书签") }
-                    TextButton(onClick = {
-                        batchPage = null
-                        batchImport(page, toBookmarks = false, toHome = true)
-                    }) { Text("快捷入口") }
-                    TextButton(onClick = {
-                        batchPage = null
-                        batchImport(page, toBookmarks = true, toHome = true)
-                    }) { Text("两者") }
-                }
+                        batchImport(
+                            page = page,
+                            toBookmarks = toBookmarks,
+                            bookmarkFolderId = folderId,
+                            toHome = toHome,
+                            homeStartPage = homeStart
+                        )
+                    }
+                ) { Text("开始导入") }
             },
             dismissButton = {
                 TextButton(onClick = { batchPage = null }) { Text("取消") }
             }
         )
+    }
+}
+
+@Composable
+private fun SettingsSwitchRowInline(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable { onChange(!checked) }
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, fontSize = 14.sp, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 
@@ -1320,142 +1441,152 @@ private fun HomeShortcutGrid(
     val density = LocalDensity.current
     val gap = 4.dp
 
+    val rows = ((cells.size + columns - 1) / columns).coerceAtLeast(1)
+    val rowHeight = SHORTCUT_ROW_PITCH
+    val gapPx = with(density) { gap.toPx() }
+
     BoxWithConstraints(
         modifier
             .fillMaxWidth()
             .onSizeChanged { gridSize = it }
     ) {
-        // 固定行距 104dp（图标 52 + 纵向净间距约 31dp），行数固定 5 行、底部对齐；
-        // 只有屏幕高度不足时才等比压缩，保证各页最底部一行始终对齐同一基准线
-        val rowHeight = if (constraints.hasBoundedHeight) {
-            minOf(SHORTCUT_ROW_PITCH, maxHeight / HOME_ROWS)
+        val rowPx = with(density) { rowHeight.toPx() }
+        val gridHeightPx = if (constraints.hasBoundedHeight) {
+            with(density) { maxHeight.toPx() }
         } else {
-            SHORTCUT_ROW_PITCH
+            rowPx * rows
         }
+        // 预备格整体贴底：最底行与页面指示器保持固定间距；多出来的行向上延伸
+        val contentTopPx = (gridHeightPx - rowPx * rows).coerceAtLeast(0f)
 
         Box(
             Modifier
                 .fillMaxSize()
-                .pointerInput(cells, columns, rowHeight) {
+                .clipToBounds()
+                .pointerInput(cells, columns, rows, rowPx, contentTopPx) {
                     fun slotAt(pos: Offset): Int {
                         if (gridSize.width <= 0) return -1
-                        val gapPx = with(density) { gap.toPx() }
-                        val rowPx = with(density) { rowHeight.toPx() }
                         val cellWidth = (gridSize.width - gapPx * (columns - 1)) / columns
                         if (cellWidth <= 0f) return -1
                         val column = (pos.x / (cellWidth + gapPx)).toInt().coerceIn(0, columns - 1)
-                        val row = (pos.y / rowPx).toInt().coerceAtLeast(0)
-                        val index = row * columns + column
+                        val rowFromTop = ((pos.y - contentTopPx) / rowPx).toInt()
+                        if (rowFromTop < 0 || rowFromTop >= rows) return -1
+                        // 格子从底部开始编号：slot 0 是最底行最左格
+                        val slotRow = rows - 1 - rowFromTop
+                        val index = slotRow * columns + column
                         return if (index in cells.indices) index else -1
                     }
                     val tapSlop = with(density) { 12.dp.toPx() }
-                detectDragGesturesAfterLongPress(
-                    onDragStart = { start ->
-                        val index = slotAt(start)
-                        val target = cells.getOrNull(index)
-                        if (target != null) {
-                            dragging = target
-                            dragStart = start
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = { start ->
+                            val index = slotAt(start)
+                            val target = cells.getOrNull(index)
+                            if (target != null) {
+                                dragging = target
+                                dragStart = start
+                                dragOffset = Offset.Zero
+                                hoverIndex = -1
+                            }
+                        },
+                        onDrag = { change, amount ->
+                            if (dragging == null) {
+                                change.consume()
+                                return@detectDragGesturesAfterLongPress
+                            }
+                            change.consume()
+                            dragOffset += amount
+                            hoverIndex = slotAt(dragStart + dragOffset)
+                        },
+                        onDragEnd = {
+                            val dragged = dragging
+                            if (dragged != null) {
+                                if (dragOffset.getDistance() < tapSlop) {
+                                    onLongPress(dragged)
+                                } else if (hoverIndex >= 0) {
+                                    val target = cells.getOrNull(hoverIndex)
+                                    if (target != null && target.id != dragged.id) {
+                                        onMerge(dragged, target)
+                                    } else if (target == null) {
+                                        onMoveToSlot(dragged, hoverIndex)
+                                    }
+                                }
+                            }
+                            dragging = null
+                            dragOffset = Offset.Zero
+                            hoverIndex = -1
+                        },
+                        onDragCancel = {
+                            dragging = null
                             dragOffset = Offset.Zero
                             hoverIndex = -1
                         }
-                    },
-                    onDrag = { change, amount ->
-                        if (dragging == null) {
-                            change.consume()
-                            return@detectDragGesturesAfterLongPress
-                        }
-                        change.consume()
-                        dragOffset += amount
-                        hoverIndex = slotAt(dragStart + dragOffset)
-                    },
-                    onDragEnd = {
-                        val dragged = dragging
-                        if (dragged != null) {
-                            if (dragOffset.getDistance() < tapSlop) {
-                                onLongPress(dragged)
-                            } else if (hoverIndex >= 0) {
-                                val target = cells.getOrNull(hoverIndex)
-                                if (target != null && target.id != dragged.id) {
-                                    onMerge(dragged, target)
-                                } else if (target == null) {
-                                    onMoveToSlot(dragged, hoverIndex)
+                    )
+                }
+        ) {
+            Column(
+                Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.Bottom
+            ) {
+                // 倒序渲染：slot 0 所在行画在最下面，保证各页第一行都贴同一底线
+                val slices = cells.chunked(columns)
+                slices.reversed().forEachIndexed { displayIndex, rowCells ->
+                    val slotRow = rows - 1 - displayIndex
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(rowHeight),
+                        horizontalArrangement = Arrangement.spacedBy(gap)
+                    ) {
+                        rowCells.forEachIndexed { columnIndex, cell ->
+                            val absoluteIndex = slotRow * columns + columnIndex
+                            val isDragging = cell != null && dragging?.id == cell.id
+                            Box(
+                                Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .background(
+                                        if (!isDragging && hoverIndex == absoluteIndex) {
+                                            MaterialTheme.colorScheme.secondary.copy(alpha = 0.10f)
+                                        } else {
+                                            Color.Transparent
+                                        },
+                                        RoundedCornerShape(16.dp)
+                                    )
+                                    .zIndex(if (isDragging) 1f else 0f)
+                            ) {
+                                if (cell != null) {
+                                    HomeShortcutIcon(
+                                        item = cell,
+                                        children = if (cell.isFolder) {
+                                            allItems.filter { it.parentId == cell.id }
+                                                .sortedBy { it.sortOrder }
+                                        } else {
+                                            emptyList()
+                                        },
+                                        highlight = !isDragging && hoverIndex == absoluteIndex,
+                                        clickEnabled = dragging == null,
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .offset {
+                                                if (isDragging) {
+                                                    IntOffset(
+                                                        dragOffset.x.roundToInt(),
+                                                        dragOffset.y.roundToInt()
+                                                    )
+                                                } else {
+                                                    IntOffset.Zero
+                                                }
+                                            },
+                                        onClick = { onOpen(cell) }
+                                    )
                                 }
                             }
                         }
-                        dragging = null
-                        dragOffset = Offset.Zero
-                        hoverIndex = -1
-                    },
-                    onDragCancel = {
-                        dragging = null
-                        dragOffset = Offset.Zero
-                        hoverIndex = -1
+                        repeat(columns - rowCells.size) { Spacer(Modifier.weight(1f)) }
                     }
-                )
-            }
-    ) {
-        Column(
-            Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.Bottom
-        ) {
-            cells.chunked(columns).forEachIndexed { rowIndex, rowCells ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(rowHeight),
-                    horizontalArrangement = Arrangement.spacedBy(gap)
-                ) {
-                    rowCells.forEachIndexed { columnIndex, cell ->
-                        val absoluteIndex = rowIndex * columns + columnIndex
-                        val isDragging = cell != null && dragging?.id == cell.id
-                        Box(
-                            Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                                .background(
-                                    if (!isDragging && hoverIndex == absoluteIndex) {
-                                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.10f)
-                                    } else {
-                                        Color.Transparent
-                                    },
-                                    RoundedCornerShape(16.dp)
-                                )
-                                .zIndex(if (isDragging) 1f else 0f)
-                        ) {
-                            if (cell != null) {
-                                HomeShortcutIcon(
-                                    item = cell,
-                                    children = if (cell.isFolder) {
-                                        allItems.filter { it.parentId == cell.id }
-                                            .sortedBy { it.sortOrder }
-                                    } else {
-                                        emptyList()
-                                    },
-                                    highlight = !isDragging && hoverIndex == absoluteIndex,
-                                    clickEnabled = dragging == null,
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .offset {
-                                            if (isDragging) {
-                                                IntOffset(
-                                                    dragOffset.x.roundToInt(),
-                                                    dragOffset.y.roundToInt()
-                                                )
-                                            } else {
-                                                IntOffset.Zero
-                                            }
-                                        },
-                                    onClick = { onOpen(cell) }
-                                )
-                            }
-                        }
-                    }
-                    repeat(columns - rowCells.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
         }
-    }
     }
 }
 

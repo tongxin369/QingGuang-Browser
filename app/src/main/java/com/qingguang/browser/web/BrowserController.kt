@@ -285,12 +285,8 @@ class BrowserController(private val activity: Activity) {
 
     fun goHome() {
         stopReadAloud()
-        val empty = tabs.firstOrNull { it.webView.url.isNullOrEmpty() }
-        if (empty != null) {
-            activeIndex = tabs.indexOf(empty)
-        } else {
-            newTabInternal()
-        }
+        // 回到首页只切换显示，不再新建空白标签，避免反复进页面后标签越积越多
+        if (currentTab() == null) newTabInternal()
         showHome = true
         pageThemeColor = null
         renderContainer()
@@ -507,6 +503,13 @@ class BrowserController(private val activity: Activity) {
                 longPressTarget = null
                 // 提前接管 URL.createObjectURL，缓存网页生成的 Blob，避免导出下载时 fetch 被 CSP 拦截
                 view.evaluateJavascript(BLOB_STORE_JS, null)
+                // 夜间调色尽早注入，减少首屏白闪与延迟感
+                if (nightInvertEnabled()) {
+                    view.setBackgroundColor(0xFF101214.toInt())
+                    view.evaluateJavascript(NIGHT_CSS_JS, null)
+                } else {
+                    view.setBackgroundColor(0x00000000)
+                }
                 refresh()
             }
 
@@ -523,7 +526,7 @@ class BrowserController(private val activity: Activity) {
                     if (app.settings.adBlock) {
                         view.evaluateJavascript(AD_HIDE_JS, null)
                     }
-                    if (app.settings.nightWeb) {
+                    if (nightInvertEnabled()) {
                         view.evaluateJavascript(NIGHT_CSS_JS, null)
                     }
                     // 页面加载完成后自动备份一次，降低"交互后直接退出"导致的数据丢失风险
@@ -611,19 +614,34 @@ class BrowserController(private val activity: Activity) {
         })
         webView.addJavascriptInterface(BlobDownloadBridge(), "QingGuangDownload")
         webView.addJavascriptInterface(GestureBridge(), "QingGuangGestures")
+        webView.addJavascriptInterface(BackupBridge(), "QingGuangBackup")
 
         return webView
     }
 
     private fun applyDarkMode(webView: WebView) {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) return
-        val mode = app.settings.darkMode
-        val allowed = when (mode) {
-            1 -> true
-            2 -> false
-            else -> isSystemDark()
+        // 与应用主题合并：浅色=不暗化，深色/跟随系统=暗化；夜间同时注入调色 CSS
+        val allowed = when (app.settings.appTheme) {
+            1 -> false
+            else -> nightInvertEnabled()
         }
         WebSettingsCompat.setAlgorithmicDarkeningAllowed(webView.settings, allowed)
+        webView.setBackgroundColor(
+            if (nightInvertEnabled()) 0xFF101214.toInt() else 0x00000000
+        )
+    }
+
+    /** 统一主题：夜间 = 应用深色 + 网页注入深色调色（跟随系统时按系统深色判断） */
+    fun nightInvertEnabled(): Boolean = when (app.settings.appTheme) {
+        1 -> false
+        else -> isSystemDark()
+    }
+
+    /** 主题模式切换后重新应用并刷新网页 */
+    fun onThemeModeChanged() {
+        tabs.forEach { applyDarkMode(it.webView) }
+        reload()
     }
 
     private fun isSystemDark(): Boolean =
@@ -1135,6 +1153,19 @@ class BrowserController(private val activity: Activity) {
             activity.runOnUiThread {
                 currentTab()?.webView?.reload()
             }
+        }
+    }
+
+    /** 供网页 JS 调用的备份桥接：回报 IndexedDB 导出/恢复结果 */
+    inner class BackupBridge {
+        @JavascriptInterface
+        fun onIndexedDb(json: String) {
+            app.backups.deliverIndexedDb(json)
+        }
+
+        @JavascriptInterface
+        fun onIndexedDbRestored() {
+            app.backups.deliverIndexedDbRestored()
         }
     }
 
