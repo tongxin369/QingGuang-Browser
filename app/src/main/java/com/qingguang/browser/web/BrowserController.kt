@@ -335,6 +335,8 @@ class BrowserController(private val activity: Activity) {
         val tab = currentTab() ?: newTabInternal()
         showHome = false
         applySitePolicy(tab.webView, url)
+        // 从首页进入网页时恢复 WebView 可见（首页显示期间它是隐藏的）
+        renderContainer()
         tab.webView.loadUrl(url)
         refresh()
     }
@@ -443,14 +445,6 @@ class BrowserController(private val activity: Activity) {
             tab.webView.goForward()
             true
         } else false
-    }
-
-    fun goBackToHome() {
-        showHome = true
-    }
-
-    fun hideHome() {
-        showHome = false
     }
 
     // ---------------- WebView 配置 ----------------
