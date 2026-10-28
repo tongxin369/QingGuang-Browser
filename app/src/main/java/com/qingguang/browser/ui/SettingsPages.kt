@@ -289,12 +289,18 @@ private fun AppearanceSettings(controller: BrowserController) {
         modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp)
     )
     if (appTheme != 1) {
-        var brightness by remember { mutableStateOf(app.settings.nightBrightness) }
-        var contrast by remember { mutableStateOf(app.settings.nightContrast) }
+        // 亮度/对比度按站点记忆：在某个站点调整后，下次打开该站点沿用
+        val currentHost = com.qingguang.browser.util.hostOf(controller.currentUrl)
+        val saved = app.settings.nightTuningFor(currentHost)
+        var brightness by remember(currentHost) { mutableStateOf(saved.first) }
+        var contrast by remember(currentHost) { mutableStateOf(saved.second) }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         SettingsGroup("夜间网页调色")
         Text(
-            "亮度 ${brightness}%",
+            buildString {
+                append("亮度 $brightness%")
+                if (currentHost.isNotBlank()) append(" · 当前站点 $currentHost")
+            },
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.secondary,
             modifier = Modifier.padding(horizontal = 18.dp)
@@ -303,7 +309,7 @@ private fun AppearanceSettings(controller: BrowserController) {
             value = brightness.toFloat(),
             onValueChange = {
                 brightness = it.roundToInt()
-                app.settings.nightBrightness = brightness
+                app.settings.setNightTuningFor(currentHost, brightness, contrast)
                 controller.applyNightTuning()
             },
             valueRange = 70f..130f
@@ -318,11 +324,31 @@ private fun AppearanceSettings(controller: BrowserController) {
             value = contrast.toFloat(),
             onValueChange = {
                 contrast = it.roundToInt()
-                app.settings.nightContrast = contrast
+                app.settings.setNightTuningFor(currentHost, brightness, contrast)
                 controller.applyNightTuning()
             },
             valueRange = 70f..130f
         )
+        Text(
+            if (currentHost.isBlank()) "没有打开网页时调整的是全局默认值；打开网页后调整会被该站点记住。"
+            else "调整会记住到「$currentHost」，其他站点继续使用全局值。",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)
+        )
+        if (currentHost.isNotBlank() && app.settings.hasSiteNightTuning(currentHost)) {
+            TextButton(
+                onClick = {
+                    app.settings.setNightTuningFor(currentHost, 0, 0)
+                    val global = app.settings.nightTuningFor("")
+                    brightness = global.first
+                    contrast = global.second
+                    controller.applyNightTuning()
+                },
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                modifier = Modifier.padding(horizontal = 18.dp)
+            ) { Text("清除该站点的亮度记忆", fontSize = 12.sp) }
+        }
     }
 
     SettingsGroup("工具栏")

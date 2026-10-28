@@ -2595,6 +2595,54 @@ private fun PermissionCenterPage(controller: BrowserController) {
                 }
             }
         }
+        // 本次会话内已放行的站点：全部权限临时放行 + 「每次询问」逐次确认的记录，均可单独撤销
+        val sessionGrants = controller.sessionGrantedHosts()
+        val mediaGrants = controller.mediaGrantedHosts()
+        if (sessionGrants.isNotEmpty() || mediaGrants.isNotEmpty()) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 4.dp)
+            ) {
+                Text(
+                    "本次会话已授权（重启应用后清空）",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                sessionGrants.forEach { host ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(host, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                "全部权限临时放行",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(onClick = {
+                            controller.revokeSessionPermissions(host)
+                            refreshKey++
+                        }) { Text("撤销", fontSize = 12.sp) }
+                    }
+                }
+                mediaGrants.filter { it !in sessionGrants }.forEach { host ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(host, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                "麦克风/摄像头「每次询问」已放行",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(onClick = {
+                            controller.revokeMediaSessionGrant(host)
+                            refreshKey++
+                        }) { Text("撤销", fontSize = 12.sp) }
+                    }
+                }
+            }
+        }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         if (permissions.isEmpty()) {
             EmptyHint("还没有单独配置的站点。\n新增后，可分别关闭定位、摄像头、弹窗、下载、脚本或图片。")
@@ -2623,7 +2671,10 @@ private fun PermissionCenterPage(controller: BrowserController) {
                             )
                         }
                         TextButton(onClick = {
+                            val before = SitePermissionStore.load(app.settings)
+                                .firstOrNull { it.host == permission.host }?.summary().orEmpty()
                             SitePermissionStore.remove(app.settings, permission.host)
+                            controller.auditPermissionChange(permission.host, before, "")
                             refreshKey++
                         }) { Text("移除") }
                     }
@@ -2685,7 +2736,9 @@ private fun PermissionCenterPage(controller: BrowserController) {
                         if (host.isBlank()) {
                             Toast.makeText(context, "请填写域名", Toast.LENGTH_SHORT).show()
                         } else {
-                            SitePermissionStore.upsert(app.settings, SitePermission(host = host))
+                            val added = SitePermission(host = host)
+                            SitePermissionStore.upsert(app.settings, added)
+                            controller.auditPermissionChange(host, "", added.summary())
                             refreshKey++
                             showAdd = false
                         }
@@ -2741,14 +2794,20 @@ private fun PermissionCenterPage(controller: BrowserController) {
             },
             confirmButton = {
                 TextButton(onClick = {
+                    val before = SitePermissionStore.load(app.settings)
+                        .firstOrNull { it.host == origin.host }?.summary().orEmpty()
                     SitePermissionStore.upsert(app.settings, draft)
+                    controller.auditPermissionChange(origin.host, before, draft.summary())
                     refreshKey++
                     editing = null
                 }) { Text("保存") }
             },
             dismissButton = {
                 TextButton(onClick = {
+                    val before = SitePermissionStore.load(app.settings)
+                        .firstOrNull { it.host == origin.host }?.summary().orEmpty()
                     SitePermissionStore.remove(app.settings, origin.host)
+                    controller.auditPermissionChange(origin.host, before, "")
                     refreshKey++
                     editing = null
                 }) { Text("恢复默认") }
@@ -2915,7 +2974,22 @@ private fun AuditLogPage() {
             EmptyHint(if (logs.isEmpty()) "暂无操作记录。" else "没有符合筛选条件的记录。")
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
-                items(filtered, key = { it.id }) { log ->
+                val dayKeyFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+                val dayLabelFormat = SimpleDateFormat("M月d日 EEEE", Locale.getDefault())
+                itemsIndexed(filtered, key = { _, log -> log.id }) { index, log ->
+                    // 按天分组显示，长时间线的记录更容易定位
+                    val day = dayKeyFormat.format(Date(log.createdAt))
+                    val prevDay = filtered.getOrNull(index - 1)
+                        ?.let { dayKeyFormat.format(Date(it.createdAt)) }
+                    if (day != prevDay) {
+                        Text(
+                            dayLabelFormat.format(Date(log.createdAt)),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
+                        )
+                    }
                     AuditLogRow(log)
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }

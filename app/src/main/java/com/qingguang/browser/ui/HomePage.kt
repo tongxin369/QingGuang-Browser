@@ -52,7 +52,10 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -824,6 +827,67 @@ private fun LocalPagesPage(
     var chooserFiles by remember { mutableStateOf<List<String>>(emptyList()) }
     var batchPage by remember { mutableStateOf<LocalPage?>(null) }
     var batchCount by remember { mutableStateOf(0) }
+    // 目录层级浏览：展开的站点、各站点的 HTML 列表、展开的目录
+    var treeSiteId by remember { mutableStateOf<String?>(null) }
+    var siteFiles by remember { mutableStateOf<Map<String, List<String>>>(emptyMap()) }
+    var expandedDirs by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var actionTarget by remember { mutableStateOf<LocalPage?>(null) }
+    var renameTarget by remember { mutableStateOf<LocalPage?>(null) }
+    var renameText by remember { mutableStateOf("") }
+    var deleteTarget by remember { mutableStateOf<LocalPage?>(null) }
+
+    fun loadSiteFiles(page: LocalPage) {
+        scope.launch {
+            val files = withContext(Dispatchers.IO) { app.localSites.htmlFiles(page) }
+            siteFiles = siteFiles + (page.siteId to files)
+            expandedDirs = emptySet()
+        }
+    }
+
+    fun toggleSiteTree(page: LocalPage) {
+        if (treeSiteId == page.siteId) {
+            treeSiteId = null
+            return
+        }
+        treeSiteId = page.siteId
+        expandedDirs = emptySet()
+        if (siteFiles[page.siteId] == null) loadSiteFiles(page)
+    }
+
+    /** 从手机原文件/原文件夹重新导入，覆盖应用内副本 */
+    fun refreshFromSource(page: LocalPage) {
+        val uriText = page.sourceUri
+        if (uriText.isNullOrBlank()) {
+            toast(context, "该网页没有关联手机原文件，无法更新；可重新导入覆盖")
+            return
+        }
+        scope.launch {
+            runCatching {
+                val uri = Uri.parse(uriText)
+                val fresh = withContext(Dispatchers.IO) {
+                    if (page.sourceKind == "tree") {
+                        app.localSites.importDirectory(uri, page.displayName)
+                    } else {
+                        app.localSites.importSingleHtml(uri, page.displayName)
+                    }
+                }
+                app.database.localPageDao()
+                    .upsert(fresh.copy(lastOpenedAt = page.lastOpenedAt))
+                siteFiles = siteFiles - page.siteId
+                if (treeSiteId == page.siteId) loadSiteFiles(page)
+                toast(context, "已从手机原文件更新：${page.displayName}")
+            }.onFailure { toast(context, "更新失败：${it.message ?: "未知错误"}") }
+        }
+    }
+
+    fun deleteSite(page: LocalPage) {
+        scope.launch {
+            withContext(Dispatchers.IO) { app.localSites.deleteSite(page.siteId) }
+            app.database.localPageDao().delete(page.siteId)
+            if (treeSiteId == page.siteId) treeSiteId = null
+            siteFiles = siteFiles - page.siteId
+        }
+    }
 
     fun batchImport(
         page: LocalPage,
@@ -1076,7 +1140,7 @@ private fun LocalPagesPage(
                 modifier = Modifier.padding(top = 18.dp, bottom = 2.dp)
             )
             Text(
-                "点击整行打开；「换入口」切换该文件夹的默认子网页；「批量导入」可一次导入全部 HTML。",
+                "点击整行打开；左侧箭头按目录层级浏览并选择入口；右侧「⋮」可重命名、从原文件更新或删除。",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 4.dp)
@@ -1102,9 +1166,17 @@ private fun LocalPagesPage(
                         Modifier
                             .fillMaxWidth()
                             .clickable { openLocalPage(page) }
-                            .padding(vertical = 8.dp),
+                            .padding(vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        IconButton(onClick = { toggleSiteTree(page) }) {
+                            Icon(
+                                if (treeSiteId == page.siteId) Icons.Filled.KeyboardArrowUp
+                                else Icons.Filled.KeyboardArrowDown,
+                                contentDescription = "展开目录",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         Column(Modifier.weight(1f)) {
                             Text(
                                 page.displayName,
@@ -1114,30 +1186,45 @@ private fun LocalPagesPage(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                page.entryUrl.substringAfterLast('/'),
+                                // 入口文件名在 URL 里是百分号编码，展示前先解码
+                                Uri.decode(page.entryUrl.substringAfterLast('/')),
                                 fontSize = 11.sp,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        if (page.sourceKind == "tree") {
-                            TextButton(onClick = { showEntryChooser(page) }) {
-                                Text("换入口", fontSize = 12.sp)
-                            }
-                            TextButton(onClick = {
-                                scope.launch {
-                                    batchCount = withContext(Dispatchers.IO) {
-                                        app.localSites.htmlFiles(page).size
-                                    }
-                                    batchPage = page
-                                }
-                            }) { Text("批量导入", fontSize = 12.sp) }
-                        } else {
-                            Text(
-                                "单个文件",
+                        IconButton(onClick = { actionTarget = page }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "更多操作")
+                        }
+                    }
+                    if (treeSiteId == page.siteId) {
+                        val files = siteFiles[page.siteId]
+                        when {
+                            files == null -> Text(
+                                "正在读取目录…",
                                 fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 20.dp, bottom = 6.dp)
+                            )
+                            files.isEmpty() -> Text(
+                                "该站点里没有 .html 文件。",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 20.dp, bottom = 6.dp)
+                            )
+                            else -> LocalTreeRows(
+                                node = buildLocalTree(files),
+                                depth = 0,
+                                expanded = expandedDirs,
+                                onToggle = { dir ->
+                                    expandedDirs = if (dir in expandedDirs) {
+                                        expandedDirs - dir
+                                    } else {
+                                        expandedDirs + dir
+                                    }
+                                },
+                                onOpen = { relative -> openLocalPage(page, relative) }
                             )
                         }
                     }
@@ -1266,6 +1353,181 @@ private fun LocalPagesPage(
                 selectedId = folderId,
                 onDismiss = { showFolderPicker = false },
                 onSelect = { folderId = it }
+            )
+        }
+    }
+
+    actionTarget?.let { page ->
+        AlertDialog(
+            onDismissRequest = { actionTarget = null },
+            title = { Text(page.displayName, fontSize = 16.sp) },
+            text = {
+                Column {
+                    if (page.sourceKind == "tree") {
+                        TextButton(onClick = {
+                            actionTarget = null
+                            showEntryChooser(page)
+                        }) { Text("换入口（默认打开哪个网页）") }
+                        TextButton(onClick = {
+                            actionTarget = null
+                            scope.launch {
+                                batchCount = withContext(Dispatchers.IO) {
+                                    app.localSites.htmlFiles(page).size
+                                }
+                                batchPage = page
+                            }
+                        }) { Text("批量导入全部 HTML") }
+                    }
+                    TextButton(onClick = {
+                        actionTarget = null
+                        renameText = page.displayName
+                        renameTarget = page
+                    }) { Text("重命名站点") }
+                    TextButton(onClick = {
+                        actionTarget = null
+                        refreshFromSource(page)
+                    }) { Text("从手机原文件更新") }
+                    TextButton(onClick = {
+                        actionTarget = null
+                        deleteTarget = page
+                    }) {
+                        Text("删除站点", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { actionTarget = null }) { Text("关闭") }
+            }
+        )
+    }
+
+    renameTarget?.let { page ->
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("重命名站点") },
+            text = {
+                Column {
+                    Text(
+                        "只改应用内显示名称，已导入的文件与入口地址保持不变。",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = renameText,
+                        onValueChange = { renameText = it },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val name = renameText.trim()
+                    if (name.isBlank()) {
+                        toast(context, "名称不能为空")
+                    } else {
+                        scope.launch {
+                            app.database.localPageDao()
+                                .upsert(page.copy(displayName = name))
+                        }
+                        renameTarget = null
+                    }
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameTarget = null }) { Text("取消") }
+            }
+        )
+    }
+
+    deleteTarget?.let { page ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("删除本地网页？") },
+            text = {
+                Text("会删除应用内的副本「${page.displayName}」，手机原文件/原文件夹不受影响。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    deleteTarget = null
+                    deleteSite(page)
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text("取消") }
+            }
+        )
+    }
+}
+
+/** 本地站点的目录树节点：只包含 .html 文件，用于按层级选入口 */
+private class LocalDirNode(val name: String, val path: String) {
+    val dirs = linkedMapOf<String, LocalDirNode>()
+    val files = mutableListOf<Pair<String, String>>()
+}
+
+private fun buildLocalTree(files: List<String>): LocalDirNode {
+    val root = LocalDirNode("", "")
+    files.forEach { relative ->
+        val segments = relative.split('/').filter { it.isNotEmpty() }
+        if (segments.isEmpty()) return@forEach
+        var node = root
+        segments.dropLast(1).forEachIndexed { index, segment ->
+            val path = segments.take(index + 1).joinToString("/")
+            node = node.dirs.getOrPut(segment) { LocalDirNode(segment, path) }
+        }
+        node.files.add(segments.last() to relative)
+    }
+    return root
+}
+
+@Composable
+private fun LocalTreeRows(
+    node: LocalDirNode,
+    depth: Int,
+    expanded: Set<String>,
+    onToggle: (String) -> Unit,
+    onOpen: (String) -> Unit
+) {
+    val indent = (depth * 16).dp
+    node.dirs.values.forEach { dir ->
+        val open = dir.path in expanded
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { onToggle(dir.path) }
+                .padding(start = indent, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                if (open) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(dir.name, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+        }
+        if (open) {
+            LocalTreeRows(dir, depth + 1, expanded, onToggle, onOpen)
+        }
+    }
+    node.files.forEach { (name, path) ->
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { onOpen(path) }
+                .padding(start = indent + 20.dp, top = 5.dp, bottom = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                name,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

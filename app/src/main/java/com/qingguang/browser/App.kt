@@ -20,10 +20,22 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        createdAtUptime = android.os.SystemClock.uptimeMillis()
+        android.util.Log.i(
+            "QGStart",
+            "Application.onCreate +$createdAtUptime" +
+                if (android.os.Build.VERSION.SDK_INT >= 24) {
+                    " processStart=${android.os.Process.getStartUptimeMillis()}"
+                } else ""
+        )
     }
 
     companion object {
         lateinit var instance: App
+            private set
+
+        /** 冷启动埋点：Application.onCreate 时刻（uptimeMillis），供首帧日志换算耗时 */
+        var createdAtUptime: Long = 0L
             private set
     }
 }

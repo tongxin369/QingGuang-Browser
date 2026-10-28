@@ -183,7 +183,7 @@ class BrowserController(private val activity: Activity) {
     var pendingMediaRequest by mutableStateOf<PendingMediaRequest?>(null)
 
     /** 本次会话内已确认过的站点（「每次询问」不再重复弹出） */
-    private val mediaSessionAllowed = mutableSetOf<String>()
+    private val mediaSessionAllowed = androidx.compose.runtime.mutableStateListOf<String>()
 
     /** 是否处于阅读模式（页面已被重排，退出时刷新恢复） */
     var readerMode by mutableStateOf(false)
@@ -231,6 +231,7 @@ class BrowserController(private val activity: Activity) {
         if (tabs.isEmpty()) newTabInternal()
         renderContainer()
         refresh()
+        schedulePrewarmWebView()
     }
 
     fun newTab(): BrowserTab {
@@ -252,7 +253,7 @@ class BrowserController(private val activity: Activity) {
                 closeTab(victimId)
             }
         }
-        val tab = BrowserTab(UUID.randomUUID().toString(), createWebView())
+        val tab = BrowserTab(UUID.randomUUID().toString(), takePreparedWebView())
         tabs.add(tab)
         activeIndex = tabs.size - 1
         renderContainer()
@@ -342,6 +343,38 @@ class BrowserController(private val activity: Activity) {
 
     private fun currentTab(): BrowserTab? = tabs.getOrNull(activeIndex)
 
+    /** 预热好但还没挂载的 WebView：新建标签时直接取用，省掉一次 WebView 初始化 */
+    private var spareWebView: WebView? = null
+
+    private fun takePreparedWebView(): WebView {
+        val ready = spareWebView
+        spareWebView = null
+        schedulePrewarmWebView()
+        return ready ?: createWebView()
+    }
+
+    /** 空闲时提前建好下一个 WebView；限制标签数量时不再预热，避免白占内存 */
+    private fun schedulePrewarmWebView() {
+        if (spareWebView != null) return
+        val frame = container ?: return
+        if (tabs.size >= 3) return
+        frame.postDelayed({
+            if (spareWebView == null && container != null && tabs.size < 3) {
+                runCatching { spareWebView = createWebView() }
+            }
+        }, 1200)
+    }
+
+    /** 非当前标签暂停网页计时器/动画，降低后台占用；切回时恢复，不影响已打开页面 */
+    private fun updateTabActiveState() {
+        tabs.forEachIndexed { index, tab ->
+            val active = index == activeIndex && !tab.showsHome
+            runCatching {
+                if (active) tab.webView.onResume() else tab.webView.onPause()
+            }
+        }
+    }
+
     private fun renderContainer() {
         val frame = container ?: return
         frame.removeAllViews()
@@ -359,6 +392,7 @@ class BrowserController(private val activity: Activity) {
             // 首页覆盖在容器之上，WebView 必须一起隐藏，否则首页背景会透出网页残影
             tab.webView.visibility = if (tab.showsHome) View.INVISIBLE else View.VISIBLE
         }
+        updateTabActiveState()
     }
 
     // ---------------- 导航 ----------------
@@ -382,9 +416,12 @@ class BrowserController(private val activity: Activity) {
     }
 
     /** 本次会话临时授权的站点（关闭应用即失效），优先级高于持久配置 */
-    private val sessionGrants = mutableSetOf<String>()
+    private val sessionGrants = androidx.compose.runtime.mutableStateListOf<String>()
 
-    fun sessionGrantedHosts(): Set<String> = sessionGrants.toSet()
+    fun sessionGrantedHosts(): List<String> = sessionGrants.toList()
+
+    /** 本次会话内「每次询问」已放行的站点（麦克风/摄像头） */
+    fun mediaGrantedHosts(): List<String> = mediaSessionAllowed.toList()
 
     /** 仅本次会话允许该站点全部权限，并立即重新加载 */
     fun grantSessionPermissions(host: String) {
@@ -402,6 +439,11 @@ class BrowserController(private val activity: Activity) {
         sessionGrants.remove(host.trim().lowercase())
         val tab = currentTab() ?: return
         tab.webView.reload()
+    }
+
+    /** 撤销「每次询问」在本次会话里对该站点的放行 */
+    fun revokeMediaSessionGrant(host: String) {
+        mediaSessionAllowed.remove(host.trim().lowercase())
     }
 
     private fun policyForHost(host: String): SitePermission {
@@ -430,6 +472,18 @@ class BrowserController(private val activity: Activity) {
             dao.insert(AuditLog(action = action, host = host, result = result, detail = detail))
             dao.prune()
         }
+    }
+
+    /** 权限设置变更审计：记录修改前后的差异，供「操作记录」时间线回溯 */
+    internal fun auditPermissionChange(host: String, before: String, after: String) {
+        val detail = when {
+            before.isBlank() && after.isBlank() -> return
+            before.isBlank() -> "新增站点配置：$after"
+            after.isBlank() -> "恢复默认：$before"
+            before == after -> return
+            else -> "由「$before」改为「$after」"
+        }
+        audit("权限", "修改", host, detail)
     }
 
     /** 新标签页打开（长按菜单、链接菜单共用） */
@@ -583,6 +637,19 @@ class BrowserController(private val activity: Activity) {
                     return true
                 }
                 return false
+            }
+
+            override fun onReceivedError(
+                view: WebView,
+                request: WebResourceRequest,
+                error: android.webkit.WebResourceError
+            ) {
+                // 本地网页缺少资源文件（或路径大小写不符）时页面能显示但交互失效，
+                // 这里把失败地址打进 logcat（tag=QGJS），便于定位「点了没反应」
+                android.util.Log.w(
+                    "QGJS",
+                    "load error ${error.errorCode} main=${request.isForMainFrame} ${request.url}"
+                )
             }
 
             override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
@@ -795,8 +862,11 @@ class BrowserController(private val activity: Activity) {
         if (!nightOn) topFrameInverted = false
         if (nightOn) {
             view.setBackgroundColor(0xFF101214.toInt())
-            val b = app.settings.nightBrightness / 100f
-            val c = app.settings.nightContrast / 100f
+            // 亮度/对比度按站点记忆，未记忆时回退全局设置
+            val host = hostOf(view.url ?: "")
+            val (brightness, contrast) = app.settings.nightTuningFor(host)
+            val b = brightness / 100f
+            val c = contrast / 100f
             val extra = " brightness($b) contrast($c)"
             view.evaluateJavascript(
                 NIGHT_CSS_JS.replace("/*EXTRA*/", "window.__qgNightExtra='$extra';"),
@@ -1922,6 +1992,8 @@ class BrowserController(private val activity: Activity) {
         tts = null
         ttsReady = false
         container?.removeAllViews()
+        spareWebView?.let { runCatching { it.destroy() } }
+        spareWebView = null
         tabs.forEach {
             it.webView.stopLoading()
             it.webView.destroy()
@@ -1962,7 +2034,9 @@ class BrowserController(private val activity: Activity) {
                 "var before=!!d.open;" +
                 "setTimeout(function(){try{if(!!d.open===before)d.open=!before;}catch(e){}},0);" +
                 "}" +
-                "document.addEventListener('click',function(e){clickSeen=true;toggle(e.target);},true);" +
+                "document.addEventListener('click',function(e){clickSeen=true;" +
+                "try{var cs=summaryOf(e.target);if(cs)console.log('[QG] summary click, open='+!!cs.parentElement.open);}catch(err){}" +
+                "toggle(e.target);},true);" +
                 "document.addEventListener('touchstart',function(e){" +
                 "if(e.touches.length!==1)return;var t=e.touches[0];" +
                 "tap={x:t.clientX,y:t.clientY,time:Date.now(),target:e.target};clickSeen=false;" +
@@ -2205,6 +2279,39 @@ class BrowserController(private val activity: Activity) {
                 var s = document.getElementById('qg-night');
                 if (!s) { s = document.createElement('style'); s.id = 'qg-night'; root.appendChild(s); }
                 if (s.textContent !== css) s.textContent = css;
+                /* Shadow DOM 补色：整页反色后影子树里的图片会被一起反色，需要再反一次还原；
+                   深色站点则给影子树补 color-scheme，避免内部控件仍是亮色 */
+                var shadowCss = light
+                  ? 'img,video,canvas,svg,picture{filter:invert(1) hue-rotate(180deg)!important}'
+                  : ':host{color-scheme:dark;background:#101214!important}';
+                function patch(node) {
+                  var nodes;
+                  try { nodes = node.querySelectorAll('*'); } catch (e) { return; }
+                  for (var i = 0; i < nodes.length; i++) {
+                    var sr;
+                    try { sr = nodes[i].shadowRoot; } catch (e) { sr = null; }
+                    if (!sr) continue;
+                    var st = sr.getElementById ? sr.getElementById('qg-night-shadow') : null;
+                    if (!st) {
+                      try {
+                        st = document.createElement('style');
+                        st.id = 'qg-night-shadow';
+                        sr.appendChild(st);
+                      } catch (e) { continue; }
+                    }
+                    if (st.textContent !== shadowCss) st.textContent = shadowCss;
+                    patch(sr);
+                  }
+                }
+                try { patch(document); } catch (e) {}
+                /* 组件可能在页面加载后才创建影子树：前 10 秒内低频补几次 */
+                var tries = 0;
+                function later() {
+                  if (tries++ > 8) return;
+                  try { patch(document); } catch (e) {}
+                  setTimeout(later, 1200);
+                }
+                setTimeout(later, 600);
                 try { QingGuangGestures.markTopInversion(light); } catch (e) {}
               } catch (e) {}
             })();

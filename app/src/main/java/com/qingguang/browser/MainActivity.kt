@@ -162,6 +162,13 @@ class MainActivity : ComponentActivity() {
                 BrowserScreen(controller)
             }
         }
+        // 冷启动埋点：首帧布局完成时输出从 Application.onCreate 起的耗时（logcat tag=QGStart）
+        window.decorView.post {
+            android.util.Log.i(
+                "QGStart",
+                "first frame +${android.os.SystemClock.uptimeMillis() - App.createdAtUptime}ms"
+            )
+        }
         handleIntent(intent)
     }
 

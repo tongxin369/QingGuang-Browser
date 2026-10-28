@@ -167,6 +167,56 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_SITE_PERMISSIONS, "").orEmpty()
         set(value) = prefs.edit().putString(KEY_SITE_PERMISSIONS, value).apply()
 
+    /** 站点记忆的夜间亮度/对比度（JSON 对象：host -> "亮度,对比度"） */
+    var siteNightTuningJson: String
+        get() = prefs.getString(KEY_SITE_NIGHT_TUNING, "").orEmpty()
+        set(value) = prefs.edit().putString(KEY_SITE_NIGHT_TUNING, value).apply()
+
+    /** 取某站点的夜间调色参数；该站点没有单独记忆时回退到全局值 */
+    fun nightTuningFor(host: String): Pair<Int, Int> {
+        val key = host.trim().lowercase()
+        if (key.isNotBlank()) {
+            runCatching {
+                val obj = org.json.JSONObject(siteNightTuningJson)
+                val raw = obj.optString(key, "")
+                if (raw.isNotBlank()) {
+                    val parts = raw.split(',')
+                    val b = parts.getOrNull(0)?.trim()?.toIntOrNull()
+                    val c = parts.getOrNull(1)?.trim()?.toIntOrNull()
+                    if (b != null && c != null) {
+                        return b.coerceIn(70, 130) to c.coerceIn(70, 130)
+                    }
+                }
+            }
+        }
+        return nightBrightness to nightContrast
+    }
+
+    /** 记住该站点的夜间调色；亮度传 0 表示清除该站点记忆 */
+    fun setNightTuningFor(host: String, brightness: Int, contrast: Int) {
+        val key = host.trim().lowercase()
+        if (key.isBlank()) {
+            if (brightness > 0) {
+                nightBrightness = brightness
+                nightContrast = contrast
+            }
+            return
+        }
+        val obj = runCatching { org.json.JSONObject(siteNightTuningJson) }
+            .getOrDefault(org.json.JSONObject())
+        if (brightness <= 0) obj.remove(key) else obj.put(key, "$brightness,$contrast")
+        siteNightTuningJson = obj.toString()
+    }
+
+    /** 该站点是否单独记忆过夜间亮度 */
+    fun hasSiteNightTuning(host: String): Boolean {
+        val key = host.trim().lowercase()
+        if (key.isBlank()) return false
+        return runCatching {
+            org.json.JSONObject(siteNightTuningJson).optString(key, "").isNotBlank()
+        }.getOrDefault(false)
+    }
+
     companion object {
         private const val KEY_SEARCH_ENGINE = "search_engine"
         private const val KEY_AUTO_BACKUP = "auto_backup"
@@ -200,6 +250,7 @@ class SettingsStore(context: Context) {
         private const val KEY_READER_FONT_SIZE = "reader_font_size"
         private const val KEY_READER_LINE_PERCENT = "reader_line_percent"
         private const val KEY_SITE_PERMISSIONS = "site_permissions"
+        private const val KEY_SITE_NIGHT_TUNING = "site_night_tuning"
 
         const val DEFAULT_SEARCH_ENGINE = "https://www.bing.com/search?q=%s"
         const val DESKTOP_UA =
