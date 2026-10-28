@@ -669,7 +669,7 @@ private fun HomeMainPage(
         ) {
             Spacer(Modifier.height(extraTop))
             Column(Modifier.onSizeChanged { topHeightPx = it.height }) {
-                Box(Modifier.fillMaxWidth().height(38.dp)) {
+                Box(Modifier.fillMaxWidth().height(56.dp)) {
                     Row(
                         Modifier.align(Alignment.Center),
                         verticalAlignment = Alignment.CenterVertically
@@ -677,9 +677,9 @@ private fun HomeMainPage(
                         Image(
                             painter = painterResource(R.drawable.ic_launcher_foreground),
                             contentDescription = null,
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(50.dp)
                         )
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(10.dp))
                         Text(
                             "轻光",
                             fontSize = 22.sp,

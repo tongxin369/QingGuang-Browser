@@ -74,6 +74,7 @@ import com.qingguang.browser.BuildConfig
 import com.qingguang.browser.ui.theme.ThemeController
 import com.qingguang.browser.util.SettingsStore
 import com.qingguang.browser.web.BrowserController
+import kotlin.math.roundToInt
 
 /** 设置目录分组 */
 private enum class SettingsSection(
@@ -287,6 +288,42 @@ private fun AppearanceSettings(controller: BrowserController) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp)
     )
+    if (appTheme != 1) {
+        var brightness by remember { mutableStateOf(app.settings.nightBrightness) }
+        var contrast by remember { mutableStateOf(app.settings.nightContrast) }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        SettingsGroup("夜间网页调色")
+        Text(
+            "亮度 ${brightness}%",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.secondary,
+            modifier = Modifier.padding(horizontal = 18.dp)
+        )
+        Slider(
+            value = brightness.toFloat(),
+            onValueChange = {
+                brightness = it.roundToInt()
+                app.settings.nightBrightness = brightness
+                controller.applyNightTuning()
+            },
+            valueRange = 70f..130f
+        )
+        Text(
+            "对比度 ${contrast}%",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.secondary,
+            modifier = Modifier.padding(horizontal = 18.dp)
+        )
+        Slider(
+            value = contrast.toFloat(),
+            onValueChange = {
+                contrast = it.roundToInt()
+                app.settings.nightContrast = contrast
+                controller.applyNightTuning()
+            },
+            valueRange = 70f..130f
+        )
+    }
 
     SettingsGroup("工具栏")
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

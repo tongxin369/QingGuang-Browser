@@ -57,6 +57,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import org.json.JSONTokener
 import java.io.File
 import java.net.HttpURLConnection
@@ -190,6 +191,10 @@ class BrowserController(private val activity: Activity) {
     /** 由 Activity 注入：申请 Android 13+ 通知权限 */
     var notificationPermissionRequester: ((callback: (Boolean) -> Unit) -> Unit)? = null
 
+    /** 由 Activity 注入：网页请求麦克风/摄像头时申请系统运行时权限 */
+    var mediaPermissionRequester:
+        ((needAudio: Boolean, needVideo: Boolean, callback: (Boolean) -> Unit) -> Unit)? = null
+
     /** 是否正在朗读网页 */
     var isSpeaking by mutableStateOf(false)
         private set
@@ -198,6 +203,8 @@ class BrowserController(private val activity: Activity) {
     private var ttsReady = false
     private var pendingReadText: String? = null
     private var ttsLastUtterance: String? = null
+    /** 网页 speechSynthesis 的请求在语音引擎就绪前暂存 */
+    private var pendingJsSpeak: Triple<String, String, Float>? = null
 
     // ---------------- 容器与标签 ----------------
 
@@ -548,6 +555,8 @@ class BrowserController(private val activity: Activity) {
                 longPressTarget = null
                 // 提前接管 URL.createObjectURL，缓存网页生成的 Blob，避免导出下载时 fetch 被 CSP 拦截
                 view.evaluateJavascript(BLOB_STORE_JS, null)
+                // 语音合成兼容层需尽早注入，页面脚本可能在加载阶段就检测 speechSynthesis
+                view.evaluateJavascript(SPEECH_POLYFILL_JS, null)
                 // 夜间调色尽早注入，减少首屏白闪与延迟感
                 applyDarkMode(view)
                 injectNightCss(view)
@@ -556,7 +565,11 @@ class BrowserController(private val activity: Activity) {
 
             override fun onPageCommitVisible(view: WebView, url: String?) {
                 // 页面内容即将可见时再注入一次：比 onPageFinished 更早，明显减少暗色延迟
-                if (view === currentTab()?.webView) injectNightCss(view)
+                if (view === currentTab()?.webView) {
+                    injectNightCss(view)
+                    view.evaluateJavascript(SPEECH_POLYFILL_JS, null)
+                    view.evaluateJavascript(DETAILS_POLYFILL_JS, null)
+                }
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
@@ -569,6 +582,10 @@ class BrowserController(private val activity: Activity) {
                     view.evaluateJavascript(PICKER_POLYFILL_JS, null)
                     // 手势与广告元素隐藏
                     gestureScript()?.let { view.evaluateJavascript(it, null) }
+                    // 原生 <details> 在部分页面被子元素的 stopPropagation 拦截，补一段兜底切换
+                    view.evaluateJavascript(DETAILS_POLYFILL_JS, null)
+                    // WebView 没有 speechSynthesis，注入基于系统 TTS 的兼容实现
+                    view.evaluateJavascript(SPEECH_POLYFILL_JS, null)
                     if (app.settings.adBlock) {
                         view.evaluateJavascript(AD_HIDE_JS, null)
                     }
@@ -612,14 +629,37 @@ class BrowserController(private val activity: Activity) {
             }
 
             override fun onPermissionRequest(request: android.webkit.PermissionRequest) {
-                val host = hostOf(request.origin.toString())
+                val origin = request.origin.toString()
+                val host = hostOf(origin)
                 val policy = policyForHost(host)
-                if (policy.allowCamera) {
-                    request.grant(request.resources)
-                    audit("摄像头/麦克风", "允许", host, request.origin.toString())
-                } else {
+                if (!policy.allowCamera) {
                     request.deny()
-                    audit("摄像头/麦克风", "拒绝", host, request.origin.toString())
+                    audit("摄像头/麦克风", "拒绝", host, origin)
+                    return
+                }
+                val resources = request.resources
+                val needAudio =
+                    resources.contains(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                val needVideo =
+                    resources.contains(android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                val requester = mediaPermissionRequester
+                if (requester == null) {
+                    runCatching { request.grant(resources) }
+                    audit("摄像头/麦克风", "允许", host, origin)
+                    return
+                }
+                // WebView 授权前必须先拿到系统运行时权限，否则会提示麦克风被占用/无法启动
+                requester(needAudio, needVideo) { granted ->
+                    activity.runOnUiThread {
+                        if (granted) {
+                            runCatching { request.grant(resources) }
+                            audit("摄像头/麦克风", "允许", host, origin)
+                        } else {
+                            runCatching { request.deny() }
+                            audit("摄像头/麦克风", "拒绝", host, "系统未授予录音/摄像头权限")
+                            toast("麦克风/摄像头被系统拒绝，请在系统设置中允许「轻光浏览器」使用麦克风")
+                        }
+                    }
                 }
             }
 
@@ -661,6 +701,7 @@ class BrowserController(private val activity: Activity) {
         webView.addJavascriptInterface(BlobDownloadBridge(), "QingGuangDownload")
         webView.addJavascriptInterface(GestureBridge(), "QingGuangGestures")
         webView.addJavascriptInterface(BackupBridge(), "QingGuangBackup")
+        webView.addJavascriptInterface(TtsBridge(), "QingGuangTts")
 
         return webView
     }
@@ -696,10 +737,21 @@ class BrowserController(private val activity: Activity) {
     private fun injectNightCss(view: WebView) {
         if (nightEnabledFor(view.url)) {
             view.setBackgroundColor(0xFF101214.toInt())
-            view.evaluateJavascript(NIGHT_CSS_JS, null)
+            val b = app.settings.nightBrightness / 100f
+            val c = app.settings.nightContrast / 100f
+            val extra = " brightness($b) contrast($c)"
+            view.evaluateJavascript(
+                NIGHT_CSS_JS.replace("/*EXTRA*/", "window.__qgNightExtra='$extra';"),
+                null
+            )
         } else {
             view.setBackgroundColor(0x00000000)
         }
+    }
+
+    /** 夜间亮度/对比度调整后，直接对已打开的网页重新注入样式，无需刷新 */
+    fun applyNightTuning() {
+        tabs.forEach { injectNightCss(it.webView) }
     }
 
     /** 主题模式切换后重新应用并刷新网页 */
@@ -1244,6 +1296,27 @@ class BrowserController(private val activity: Activity) {
         }
     }
 
+    /** 供网页 JS 调用的语音合成桥接：把网页的 speechSynthesis 请求交给系统 TTS */
+    inner class TtsBridge {
+        @JavascriptInterface
+        fun speak(id: String?, text: String?, rate: Float) {
+            val utteranceId = id?.takeIf { it.isNotBlank() } ?: "qgjs-0"
+            val content = text.orEmpty()
+            activity.runOnUiThread { speakForWebPage(utteranceId, content, rate) }
+        }
+
+        @JavascriptInterface
+        fun stop() {
+            activity.runOnUiThread {
+                pendingJsSpeak = null
+                tts?.stop()
+            }
+        }
+
+        @JavascriptInterface
+        fun isReady(): Boolean = ttsReady
+    }
+
     /** 供网页 JS 调用的 blob 下载桥接 */
     inner class BlobDownloadBridge {
         @JavascriptInterface
@@ -1464,6 +1537,7 @@ class BrowserController(private val activity: Activity) {
         if (chunks.isEmpty()) return
         val engine = tts ?: return
         engine.stop()
+        runCatching { engine.setSpeechRate(1.0f) }
         if (!applyTtsLanguage(engine)) {
             isSpeaking = false
             toast("语音引擎缺少中文语音数据，请在系统设置中下载语音包")
@@ -1496,6 +1570,52 @@ class BrowserController(private val activity: Activity) {
 
     private var ttsInitAttempt = 0
 
+    /** 网页调用 speechSynthesis.speak() 时，用系统 TTS 朗读并回调网页事件 */
+    private fun speakForWebPage(utteranceId: String, text: String, rate: Float) {
+        if (text.isBlank()) {
+            notifyWebTts(utteranceId, null)
+            return
+        }
+        if (!ttsReady) {
+            pendingJsSpeak = Triple(utteranceId, text, rate)
+            ensureTts()
+            return
+        }
+        val engine = tts
+        if (engine == null) {
+            notifyWebTts(utteranceId, "synthesis-unavailable")
+            return
+        }
+        if (!applyTtsLanguage(engine)) {
+            notifyWebTts(utteranceId, "language-unavailable")
+            return
+        }
+        engine.stop()
+        runCatching { engine.setSpeechRate(rate.coerceIn(0.5f, 2.0f)) }
+        val params = Bundle().apply {
+            putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+        }
+        val started = engine.speak(
+            text.take(3000),
+            TextToSpeech.QUEUE_FLUSH,
+            params,
+            utteranceId
+        ) == TextToSpeech.SUCCESS
+        if (!started) notifyWebTts(utteranceId, "synthesis-failed")
+    }
+
+    /** 回调网页的 SpeechSynthesisUtterance 事件；error 非空时走 onerror */
+    private fun notifyWebTts(utteranceId: String, error: String?) {
+        val view = currentTab()?.webView ?: return
+        val quoted = JSONObject.quote(utteranceId)
+        val js = if (error == null) {
+            "window.__qgTtsOnEnd&&window.__qgTtsOnEnd($quoted)"
+        } else {
+            "window.__qgTtsOnError&&window.__qgTtsOnError($quoted,${JSONObject.quote(error)})"
+        }
+        view.evaluateJavascript(js, null)
+    }
+
     private fun ensureTts() {
         if (tts != null) {
             if (ttsReady) {
@@ -1522,6 +1642,10 @@ class BrowserController(private val activity: Activity) {
                         .postDelayed({ createTts() }, 900)
                 } else {
                     pendingReadText = null
+                    pendingJsSpeak?.let { queued ->
+                        pendingJsSpeak = null
+                        notifyWebTts(queued.first, "synthesis-unavailable")
+                    }
                     isSpeaking = false
                     toast(
                         "语音引擎初始化失败。红米/MIUI 请在 设置 → 无障碍 → 文字转语音 中选择「小米语音引擎」，" +
@@ -1555,13 +1679,20 @@ class BrowserController(private val activity: Activity) {
                 }
 
                 override fun onDone(utteranceId: String?) {
-                    if (utteranceId == ttsLastUtterance) {
+                    if (utteranceId == null) return
+                    if (utteranceId.startsWith("qgjs-")) {
+                        notifyWebTts(utteranceId, null)
+                    } else if (utteranceId == ttsLastUtterance) {
                         activity.runOnUiThread { isSpeaking = false }
                     }
                 }
 
                 @Deprecated("Deprecated in Java")
                 override fun onError(utteranceId: String?) {
+                    if (utteranceId != null && utteranceId.startsWith("qgjs-")) {
+                        notifyWebTts(utteranceId, "synthesis-failed")
+                        return
+                    }
                     activity.runOnUiThread {
                         isSpeaking = false
                         toast("朗读中断，请检查系统语音引擎")
@@ -1572,6 +1703,12 @@ class BrowserController(private val activity: Activity) {
             pendingReadText = null
             if (!pending.isNullOrBlank()) {
                 activity.runOnUiThread { speakChunks(splitForTts(pending)) }
+            }
+            pendingJsSpeak?.let { queued ->
+                pendingJsSpeak = null
+                activity.runOnUiThread {
+                    speakForWebPage(queued.first, queued.second, queued.third)
+                }
             }
         }
         tts = TextToSpeech(activity, listener)
@@ -1688,6 +1825,90 @@ class BrowserController(private val activity: Activity) {
                 "if(!c&&document.documentElement){c=h(getComputedStyle(document.documentElement).backgroundColor);}" +
                 "return c;}catch(e){return '';}})()"
 
+        /**
+         * 原生 <details>/<summary> 兜底：部分页面在 summary 或子元素上 stopPropagation，
+         * 导致默认展开行为被吞掉。这里在 click 之后检查 open 是否变化，未变化则手动切换。
+         */
+        private const val DETAILS_POLYFILL_JS =
+            "(function(){if(window.__qgDetailsHooked)return;window.__qgDetailsHooked=true;" +
+                "document.addEventListener('click',function(e){" +
+                "var t=e.target;if(!t||!t.closest)return;" +
+                "var s=t.closest('summary');if(!s)return;" +
+                "var d=s.parentElement;" +
+                "if(!d||!d.tagName||d.tagName.toLowerCase()!=='details')return;" +
+                "var before=!!d.open;" +
+                "setTimeout(function(){try{if(!!d.open===before)d.open=!before;}catch(err){}},0);" +
+                "},true);})()"
+
+        /** WebView 没有 speechSynthesis：用系统 TTS 桥接出最小的语音合成接口 */
+        private val SPEECH_POLYFILL_JS = """
+            (function(){
+              try {
+                if (!window.QingGuangTts) return;
+                if (!window.__qgVoices) {
+                  window.__qgVoices = [{name:'系统语音',lang:'zh-CN',voiceURI:'qingguang-zh',localService:true,default:true}];
+                }
+                function Utterance(text){
+                  this.text = text == null ? '' : String(text);
+                  this.lang = 'zh-CN'; this.rate = 1; this.pitch = 1; this.volume = 1;
+                  this.voice = null; this.onstart = null; this.onend = null; this.onerror = null;
+                  this.onpause = null; this.onresume = null; this.onboundary = null;
+                }
+                if (!window.SpeechSynthesisUtterance) window.SpeechSynthesisUtterance = Utterance;
+                if (window.speechSynthesis && typeof window.speechSynthesis.speak === 'function') return;
+                var seq = 0, queue = [], current = null;
+                var synth = {
+                  speaking:false, pending:false, paused:false,
+                  speak:function(u){
+                    var item = (u && typeof u === 'object') ? u : new Utterance(u);
+                    queue.push(item);
+                    startNext();
+                  },
+                  cancel:function(){
+                    queue.length = 0;
+                    try { QingGuangTts.stop(); } catch (e) {}
+                    if (current) { var c = current; current = null; finish(c, true); }
+                    synth.speaking = false; synth.pending = false;
+                  },
+                  pause:function(){ synth.paused = true; try { QingGuangTts.pause(); } catch (e) {} },
+                  resume:function(){ synth.paused = false; try { QingGuangTts.resume(); } catch (e) {} },
+                  getVoices:function(){ return window.__qgVoices; },
+                  addEventListener:function(k, f){ if (k === 'voiceschanged' && typeof f === 'function') setTimeout(f, 0); },
+                  removeEventListener:function(){},
+                  onvoiceschanged:null
+                };
+                function startNext(){
+                  if (current || !queue.length) return;
+                  var u = queue.shift();
+                  current = u;
+                  synth.speaking = true;
+                  if (typeof u.onstart === 'function') { try { u.onstart({type:'start',utterance:u,charIndex:0}); } catch (e) {} }
+                  try {
+                    var id = 'qgjs-' + (++seq);
+                    u.__id = id;
+                    QingGuangTts.speak(id, u.text || '', Number(u.rate) || 1);
+                  } catch (e) { finish(u, true); }
+                }
+                function finish(u, cancelled){
+                  if (!u) return;
+                  if (current === u) current = null;
+                  if (cancelled) {
+                    if (typeof u.onerror === 'function') { try { u.onerror({type:'error',error:'interrupted',utterance:u}); } catch (e) {} }
+                  } else if (typeof u.onend === 'function') { try { u.onend({type:'end',utterance:u}); } catch (e) {} }
+                  if (!queue.length) synth.speaking = false;
+                  setTimeout(startNext, 0);
+                }
+                window.__qgTtsOnEnd = function(id){ if (current && current.__id === id) finish(current, false); };
+                window.__qgTtsOnError = function(id, reason){ if (current && current.__id === id) finish(current, false); };
+                try {
+                  Object.defineProperty(window, 'speechSynthesis', {
+                    configurable:true, get:function(){ return synth; }
+                  });
+                } catch (e) { window.speechSynthesis = synth; }
+              } catch (e) {}
+            })();
+        """.trimIndent()
+
         /** Android WebView 没有 File System Access API，注入基于 input[type=file] 的兼容实现 */
         private const val PICKER_POLYFILL_JS =
             "(function(){if(window.showOpenFilePicker)return;" +
@@ -1796,7 +2017,7 @@ class BrowserController(private val activity: Activity) {
 
         private val NIGHT_CSS_JS = """
             (function(){
-              if (document.getElementById('qg-night')) return;
+              /*EXTRA*/
               try {
                 var root = document.documentElement;
                 var body = document.body || root;
@@ -1807,13 +2028,14 @@ class BrowserController(private val activity: Activity) {
                   var lum = (0.299 * (+m[1]) + 0.587 * (+m[2]) + 0.114 * (+m[3])) / 255;
                   light = lum > 0.55;
                 }
-                var s = document.createElement('style');
-                s.id = 'qg-night';
-                s.textContent = light
-                  ? 'html{filter:invert(1) hue-rotate(180deg);background:#101214!important}' +
+                var extra = window.__qgNightExtra || '';
+                var css = light
+                  ? 'html{filter:invert(1) hue-rotate(180deg)' + extra + ';background:#101214!important}' +
                     'img,video,canvas,svg,picture{filter:invert(1) hue-rotate(180deg)!important}'
-                  : 'html{color-scheme:dark;background:#101214!important}';
-                root.appendChild(s);
+                  : 'html{color-scheme:dark;background:#101214!important;filter:' + extra + '}';
+                var s = document.getElementById('qg-night');
+                if (!s) { s = document.createElement('style'); s.id = 'qg-night'; root.appendChild(s); }
+                if (s.textContent !== css) s.textContent = css;
               } catch (e) {}
             })();
         """.trimIndent()

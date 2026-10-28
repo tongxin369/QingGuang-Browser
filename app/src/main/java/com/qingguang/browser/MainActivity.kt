@@ -29,6 +29,7 @@ class MainActivity : ComponentActivity() {
     private var pendingLocationCallback: ((Boolean) -> Unit)? = null
     private var pendingFileCallback: ((Array<Uri>?) -> Unit)? = null
     private var pendingNotificationCallback: ((Boolean) -> Unit)? = null
+    private var pendingMediaCallback: ((Boolean) -> Unit)? = null
 
     private val locationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -44,6 +45,15 @@ class MainActivity : ComponentActivity() {
     ) { granted ->
         pendingNotificationCallback?.invoke(granted)
         pendingNotificationCallback = null
+    }
+
+    /** 网页请求麦克风/摄像头时申请对应的系统运行时权限 */
+    private val mediaPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        val callback = pendingMediaCallback
+        pendingMediaCallback = null
+        callback?.invoke(result.values.all { it })
     }
 
     /** 网页 <input type="file"> 选文件结果回传，支持一次选择多个文件 */
@@ -117,6 +127,27 @@ class MainActivity : ComponentActivity() {
             } else {
                 pendingNotificationCallback = callback
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+        controller.mediaPermissionRequester = { needAudio, needVideo, callback ->
+            val missing = mutableListOf<String>()
+            if (needAudio && ContextCompat.checkSelfPermission(
+                    this, Manifest.permission.RECORD_AUDIO
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                missing.add(Manifest.permission.RECORD_AUDIO)
+            }
+            if (needVideo && ContextCompat.checkSelfPermission(
+                    this, Manifest.permission.CAMERA
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                missing.add(Manifest.permission.CAMERA)
+            }
+            if (missing.isEmpty()) {
+                callback(true)
+            } else {
+                pendingMediaCallback = callback
+                mediaPermissionLauncher.launch(missing.toTypedArray())
             }
         }
         applyScreenOrientation()

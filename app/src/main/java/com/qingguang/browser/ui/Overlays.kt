@@ -1126,7 +1126,7 @@ private fun BookmarkListRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .pointerInput(bookmark.id, selectionMode) {
+            .pointerInput(bookmark.id, selectionMode, trailingHint) {
                 if (trailingHint == null) {
                     detectTapGestures(onTap = { onClick() }, onLongPress = { onLongClick() })
                 }
