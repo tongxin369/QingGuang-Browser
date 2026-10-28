@@ -464,6 +464,24 @@ private fun BrowsingSettings(controller: BrowserController) {
         showTabRestore = value
         app.settings.showTabRestore = value
     }
+    var tabLimit by remember { mutableStateOf(app.settings.tabLimit) }
+    SettingsGroup("标签页数量上限")
+    Text(
+        if (tabLimit == 0) "不限制（默认，按需保留所有标签）" else "最多保留 $tabLimit 个标签，超出后自动关闭最旧的未锁定标签",
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 18.dp)
+    )
+    Slider(
+        value = tabLimit.toFloat(),
+        onValueChange = {
+            tabLimit = it.roundToInt()
+            app.settings.tabLimit = tabLimit
+        },
+        valueRange = 0f..30f,
+        steps = 29,
+        modifier = Modifier.padding(horizontal = 18.dp)
+    )
 
     SettingsGroup("手势")
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

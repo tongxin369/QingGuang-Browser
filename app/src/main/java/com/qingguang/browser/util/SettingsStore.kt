@@ -72,6 +72,11 @@ class SettingsStore(context: Context) {
         get() = prefs.getInt(KEY_NIGHT_CONTRAST, 100).coerceIn(70, 130)
         set(value) = prefs.edit().putInt(KEY_NIGHT_CONTRAST, value.coerceIn(70, 130)).apply()
 
+    /** 标签页数量上限；0 表示不限制（默认不限制，保持自由度） */
+    var tabLimit: Int
+        get() = prefs.getInt(KEY_TAB_LIMIT, 0).coerceIn(0, 99)
+        set(value) = prefs.edit().putInt(KEY_TAB_LIMIT, value.coerceIn(0, 99)).apply()
+
     /** 屏幕方向：0 跟随系统，1 自动旋转，2 竖屏，3 横屏 */
     var screenOrientation: Int
         get() = prefs.getInt(KEY_SCREEN_ORIENTATION, 0).coerceIn(0, 3)
@@ -177,6 +182,7 @@ class SettingsStore(context: Context) {
         private const val KEY_NIGHT_BRIGHTNESS = "night_brightness"
         private const val KEY_NIGHT_CONTRAST = "night_contrast"
         private const val KEY_SCREEN_ORIENTATION = "screen_orientation"
+        private const val KEY_TAB_LIMIT = "tab_limit"
         private const val KEY_FOLLOW_PAGE_THEME = "follow_page_theme"
         private const val KEY_BACKUP_TREE_URI = "backup_tree_uri"
         private const val KEY_MENU_ORDER = "menu_order"

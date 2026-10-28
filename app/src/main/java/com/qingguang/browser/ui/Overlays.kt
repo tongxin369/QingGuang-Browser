@@ -112,6 +112,9 @@ import com.qingguang.browser.util.BackupManager
 import com.qingguang.browser.util.SitePermission
 import com.qingguang.browser.util.SitePermissionStore
 import com.qingguang.browser.web.BrowserController
+import org.burnoutcrew.reorderable.ReorderableItem
+import org.burnoutcrew.reorderable.detectReorderAfterLongPress
+import org.burnoutcrew.reorderable.reorderable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -199,12 +202,22 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
     var batchMove by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var sortMode by remember { mutableStateOf(false) }
-    var dragId by remember { mutableStateOf<Long?>(null) }
-    var dragOffset by remember { mutableStateOf(0f) }
-    var autoScroll by remember { mutableStateOf(0f) }
     val bookmarkListState = androidx.compose.foundation.lazy.rememberLazyListState()
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val rowHeightPx = with(density) { 66.dp.toPx() }
+    // 整理模式下的本地顺序（拖动时先改本地顺序，松手后再落库）
+    val sortItems = remember { mutableStateListOf<com.qingguang.browser.data.Bookmark>() }
+    val reorderState = org.burnoutcrew.reorderable.rememberReorderableLazyListState(
+        onMove = { from, to ->
+            val fromKey = from.key as? String
+            val toKey = to.key as? String
+            if (fromKey != null && toKey != null) {
+                val fromIndex = sortItems.indexOfFirst { "b-${it.id}" == fromKey }
+                val toIndex = sortItems.indexOfFirst { "b-${it.id}" == toKey }
+                if (fromIndex >= 0 && toIndex >= 0) {
+                    sortItems.add(toIndex, sortItems.removeAt(fromIndex))
+                }
+            }
+        }
+    )
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/html")
@@ -322,21 +335,18 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
     }
     val shownFolders = if (selecting || sortMode) emptyList() else visibleFolders
 
-    fun finishReorder(fromIndex: Int) {
-        val moved = ((dragOffset + autoScroll) / rowHeightPx).roundToInt()
-        dragId = null
-        dragOffset = 0f
-        autoScroll = 0f
-        if (moved == 0) return
-        val list = visibleBookmarks.toMutableList()
-        if (fromIndex !in list.indices) return
-        val target = (fromIndex + moved).coerceIn(0, list.lastIndex)
-        if (target == fromIndex) return
-        val item = list.removeAt(fromIndex)
-        list.add(target, item)
-        scope.launch {
-            list.forEachIndexed { index, bookmark ->
-                app.database.bookmarkDao().updateSortOrder(bookmark.id, index + 1)
+    // 整理模式：把当前文件夹的顺序同步到本地列表；松手后按本地顺序落库
+    val orderKey = visibleBookmarks.joinToString(",") { it.id.toString() }
+    LaunchedEffect(sortMode, orderKey) {
+        if (sortMode && reorderState.draggingItemIndex == null) {
+            sortItems.clear()
+            sortItems.addAll(visibleBookmarks)
+        }
+    }
+    LaunchedEffect(reorderState.draggingItemIndex) {
+        if (sortMode && reorderState.draggingItemIndex == null && sortItems.isNotEmpty()) {
+            sortItems.forEachIndexed { i, bookmark ->
+                app.database.bookmarkDao().updateSortOrder(bookmark.id, i + 1)
             }
         }
     }
@@ -516,10 +526,12 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                 )
             } else {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    state = bookmarkListState,
-                    // 拖动时禁用列表滚动，避免滚动手势把长按拖动“抢走”导致脱手
-                    userScrollEnabled = dragId == null
+                    modifier = if (sortMode) {
+                        Modifier
+                            .fillMaxSize()
+                            .reorderable(reorderState)
+                    } else Modifier.fillMaxSize(),
+                    state = if (sortMode) reorderState.listState else bookmarkListState
                 ) {
                     items(shownFolders, key = { "f-${it.id}" }) { folder ->
                         BookmarkFolderRow(
@@ -529,80 +541,11 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                             onLongClick = { folderAction = folder }
                         )
                     }
-                    itemsIndexed(visibleBookmarks, key = { _, it -> "b-${it.id}" }) { index, bookmark ->
-                        val dragging = dragId == bookmark.id
-                        Box(
-                            Modifier
-                                .offset {
-                                    IntOffset(
-                                        0,
-                                        if (dragging) (dragOffset + autoScroll).roundToInt() else 0
-                                    )
-                                }
-                                .zIndex(if (dragging) 1f else 0f)
-                                .graphicsLayer {
-                                    if (dragging) {
-                                        scaleX = 1.03f
-                                        scaleY = 1.03f
-                                        shadowElevation = 12f
-                                    }
-                                }
-                                .then(
-                                    if (sortMode) Modifier.pointerInput(bookmark.id, index) {
-                                        awaitEachGesture {
-                                            // 在 Initial 阶段消费事件，避免被 LazyColumn 的滚动/点击手势抢走
-                                            val down = awaitFirstDown(
-                                                requireUnconsumed = false,
-                                                pass = PointerEventPass.Initial
-                                            )
-                                            val longPressed = awaitLongPressOrCancellation(down.id)
-                                                ?: return@awaitEachGesture
-                                            longPressed.consume()
-                                            dragId = bookmark.id
-                                            dragOffset = 0f
-                                            autoScroll = 0f
-                                            try {
-                                                while (true) {
-                                                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                                                    val change = event.changes
-                                                        .firstOrNull { it.id == down.id } ?: break
-                                                    if (change.changedToUpIgnoreConsumed()) {
-                                                        change.consume()
-                                                        finishReorder(index)
-                                                        break
-                                                    }
-                                                    change.consume()
-                                                    dragOffset += change.positionChange().y
-                                                    // 靠近列表上下边缘时自动滚动，拖到很远也能继续移动
-                                                    val viewport = bookmarkListState
-                                                        .layoutInfo.viewportSize.height
-                                                    if (viewport > 0) {
-                                                        val edge = with(density) { 72.dp.toPx() }
-                                                        val step = when {
-                                                            change.position.y < edge -> -18f
-                                                            change.position.y > viewport - edge -> 18f
-                                                            else -> 0f
-                                                        }
-                                                        if (step != 0f) {
-                                                            scope.launch {
-                                                                autoScroll +=
-                                                                    bookmarkListState.scrollBy(step)
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            } finally {
-                                                // 手势被系统中断时复位，避免图标卡在浮起状态
-                                                if (dragId == bookmark.id) {
-                                                    dragId = null
-                                                    dragOffset = 0f
-                                                    autoScroll = 0f
-                                                }
-                                            }
-                                        }
-                                    } else Modifier
-                                )
-                        ) {
+                    itemsIndexed(
+                        if (sortMode) sortItems else visibleBookmarks,
+                        key = { _, it -> "b-${it.id}" }
+                    ) { _, bookmark ->
+                        val rowContent: @Composable (Modifier) -> Unit = { extra ->
                             BookmarkListRow(
                                 bookmark = bookmark,
                                 selectionMode = selecting,
@@ -625,8 +568,29 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                                     }
                                 },
                                 onDelete = { deleteBookmark = bookmark },
-                                trailingHint = if (sortMode) "拖动" else null
+                                trailingHint = if (sortMode) "拖动" else null,
+                                modifier = extra
                             )
+                        }
+                        if (sortMode) {
+                            ReorderableItem(reorderState, key = "b-${bookmark.id}") { isDragging ->
+                                Box(
+                                    Modifier.graphicsLayer {
+                                        if (isDragging) {
+                                            scaleX = 1.02f
+                                            scaleY = 1.02f
+                                        }
+                                    }
+                                ) {
+                                    rowContent(
+                                        Modifier
+                                            .background(MaterialTheme.colorScheme.surface)
+                                            .detectReorderAfterLongPress(reorderState)
+                                    )
+                                }
+                            }
+                        } else {
+                            rowContent(Modifier)
                         }
                     }
                     item { Spacer(Modifier.height(12.dp)) }
@@ -1158,10 +1122,11 @@ private fun BookmarkListRow(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onDelete: () -> Unit,
-    trailingHint: String? = null
+    trailingHint: String? = null,
+    modifier: Modifier = Modifier
 ) {
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
             .pointerInput(bookmark.id, selectionMode, trailingHint) {
                 if (trailingHint == null) {
@@ -2738,8 +2703,14 @@ private fun PermissionCenterPage(controller: BrowserController) {
             text = {
                 Column {
                     PermissionSwitch("定位", draft.allowGeo) { draft = draft.copy(allowGeo = it) }
-                    PermissionSwitch("摄像头 / 麦克风", draft.allowCamera) {
+                    PermissionSwitch("摄像头", draft.allowCamera) {
                         draft = draft.copy(allowCamera = it)
+                    }
+                    PermissionSwitch("麦克风", draft.allowMic) {
+                        draft = draft.copy(allowMic = it)
+                    }
+                    PermissionSwitch("麦克风/摄像头每次询问", draft.askEachTime) {
+                        draft = draft.copy(askEachTime = it)
                     }
                     PermissionSwitch("网页弹窗", draft.allowPopup) { draft = draft.copy(allowPopup = it) }
                     PermissionSwitch("下载文件", draft.allowDownload) {

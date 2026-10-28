@@ -39,6 +39,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewAssetLoader
+import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.qingguang.browser.App
 import com.qingguang.browser.data.AuditLog
@@ -70,6 +71,9 @@ import java.util.UUID
 
 class BrowserTab(val id: String, val webView: WebView) {
     var locked by mutableStateOf(false)
+
+    /** 该标签当前是否停留在首页（新建标签切走再切回来仍然是首页，而不是空白页） */
+    var showsHome: Boolean = true
 }
 
 /** 长按命中结果，用于网页元素菜单 */
@@ -114,6 +118,13 @@ data class PendingDownload(
 ) {
     val isBlobOrData: Boolean get() = url.startsWith("blob:") || url.startsWith("data:")
 }
+
+/** 等待用户确认的麦克风/摄像头请求（站点开启「每次询问」时使用） */
+data class PendingMediaRequest(
+    val host: String,
+    val label: String,
+    val decide: (Boolean) -> Unit
+)
 
 /**
  * 浏览器核心：多标签管理 + WebView 配置 + 本地资源拦截 + 下载 + 位置权限路由。
@@ -168,6 +179,12 @@ class BrowserController(private val activity: Activity) {
     /** 网页长按元素菜单 */
     var longPressTarget by mutableStateOf<LongPressTarget?>(null)
 
+    /** 等待用户确认的麦克风/摄像头请求 */
+    var pendingMediaRequest by mutableStateOf<PendingMediaRequest?>(null)
+
+    /** 本次会话内已确认过的站点（「每次询问」不再重复弹出） */
+    private val mediaSessionAllowed = mutableSetOf<String>()
+
     /** 是否处于阅读模式（页面已被重排，退出时刷新恢复） */
     var readerMode by mutableStateOf(false)
         private set
@@ -218,12 +235,23 @@ class BrowserController(private val activity: Activity) {
 
     fun newTab(): BrowserTab {
         val tab = newTabInternal()
+        tab.showsHome = true
         showHome = true
         refresh()
         return tab
     }
 
     private fun newTabInternal(): BrowserTab {
+        // 仅在用户设置了上限时回收最旧的未锁定标签；0 表示完全不限制
+        val limit = app.settings.tabLimit
+        if (limit > 0) {
+            while (tabs.size >= limit) {
+                val victim = tabs.indexOfLast { !it.locked && it !== currentTab() }
+                if (victim < 0) break
+                val victimId = tabs.getOrNull(victim)?.id ?: break
+                closeTab(victimId)
+            }
+        }
         val tab = BrowserTab(UUID.randomUUID().toString(), createWebView())
         tabs.add(tab)
         activeIndex = tabs.size - 1
@@ -256,6 +284,7 @@ class BrowserController(private val activity: Activity) {
             else -> index
         }
         if (tabs.isEmpty()) showHome = true
+        else showHome = tabs.getOrNull(activeIndex)?.showsHome ?: true
         renderContainer()
         refresh()
     }
@@ -270,6 +299,7 @@ class BrowserController(private val activity: Activity) {
         canRestoreTab = closedTabs.isNotEmpty()
         val tab = newTabInternal()
         showHome = false
+        tab.showsHome = false
         tab.webView.loadUrl(entry.first)
         refresh()
     }
@@ -285,11 +315,12 @@ class BrowserController(private val activity: Activity) {
         val index = tabs.indexOfFirst { it.id == id }
         if (index < 0) return
         activeIndex = index
-        showHome = false
+        // 每个标签各自记住是否停留在首页
+        showHome = tabs[index].showsHome
         pageThemeColor = null
         renderContainer()
         refresh()
-        tabs[index].webView.let { updatePageTheme(it) }
+        if (!showHome) tabs[index].webView.let { updatePageTheme(it) }
     }
 
     fun goHome() {
@@ -302,6 +333,7 @@ class BrowserController(private val activity: Activity) {
             closeTab(tab.id)
         }
         if (tabs.isEmpty()) newTabInternal()
+        currentTab()?.showsHome = true
         showHome = true
         pageThemeColor = null
         renderContainer()
@@ -325,7 +357,7 @@ class BrowserController(private val activity: Activity) {
                 )
             }
             // 首页覆盖在容器之上，WebView 必须一起隐藏，否则首页背景会透出网页残影
-            tab.webView.visibility = if (showHome) View.INVISIBLE else View.VISIBLE
+            tab.webView.visibility = if (tab.showsHome) View.INVISIBLE else View.VISIBLE
         }
     }
 
@@ -340,6 +372,7 @@ class BrowserController(private val activity: Activity) {
     fun loadUrl(url: String) {
         stopReadAloud()
         val tab = currentTab() ?: newTabInternal()
+        tab.showsHome = false
         showHome = false
         applySitePolicy(tab.webView, url)
         // 从首页进入网页时恢复 WebView 可见（首页显示期间它是隐藏的）
@@ -405,7 +438,10 @@ class BrowserController(private val activity: Activity) {
         longPressTarget = null
         newTabInternal()
         showHome = false
-        currentTab()?.webView?.loadUrl(url)
+        currentTab()?.let { tab ->
+            tab.showsHome = false
+            tab.webView.loadUrl(url)
+        }
         refresh()
     }
 
@@ -460,18 +496,21 @@ class BrowserController(private val activity: Activity) {
     private fun createWebView(): WebView {
         val webView = HitTestWebView(activity)
         webView.onHitTestLongPress = { result ->
+            // 网页自身可拖拽的元素（聚合平台图标等）交给网页处理，避免我们的菜单抢走手势
+            val skip = lastTouchDraggable
             val pageUrl = result.extra ?: ""
-            when (result.type) {
-                WebView.HitTestResult.IMAGE_TYPE,
-                WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE -> {
+            when {
+                skip -> false
+                result.type == WebView.HitTestResult.IMAGE_TYPE ||
+                    result.type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE -> {
                     longPressTarget = LongPressTarget(imageUrl = pageUrl)
                     true
                 }
-                WebView.HitTestResult.SRC_ANCHOR_TYPE -> {
+                result.type == WebView.HitTestResult.SRC_ANCHOR_TYPE -> {
                     longPressTarget = LongPressTarget(linkUrl = pageUrl)
                     true
                 }
-                WebView.HitTestResult.IMAGE_ANCHOR_TYPE -> {
+                result.type == WebView.HitTestResult.IMAGE_ANCHOR_TYPE -> {
                     longPressTarget = LongPressTarget(linkUrl = pageUrl)
                     true
                 }
@@ -548,6 +587,7 @@ class BrowserController(private val activity: Activity) {
 
             override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
                 if (view !== currentTab()?.webView) return
+                currentTab()?.showsHome = false
                 showHome = false
                 progress = 0.02f
                 pageThemeColor = null
@@ -632,35 +672,38 @@ class BrowserController(private val activity: Activity) {
                 val origin = request.origin.toString()
                 val host = hostOf(origin)
                 val policy = policyForHost(host)
-                if (!policy.allowCamera) {
-                    request.deny()
-                    audit("摄像头/麦克风", "拒绝", host, origin)
-                    return
-                }
                 val resources = request.resources
                 val needAudio =
                     resources.contains(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE)
                 val needVideo =
                     resources.contains(android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-                val requester = mediaPermissionRequester
-                if (requester == null) {
-                    runCatching { request.grant(resources) }
-                    audit("摄像头/麦克风", "允许", host, origin)
+                // 麦克风与摄像头分别由站点策略控制
+                val siteAllowed = (!needAudio || policy.allowMic) && (!needVideo || policy.allowCamera)
+                if (!siteAllowed) {
+                    runCatching { request.deny() }
+                    audit("麦克风/摄像头", "拒绝", host, "站点权限已关闭 · $origin")
                     return
                 }
-                // WebView 授权前必须先拿到系统运行时权限，否则会提示麦克风被占用/无法启动
-                requester(needAudio, needVideo) { granted ->
+                val label = buildList {
+                    if (needAudio) add("麦克风")
+                    if (needVideo) add("摄像头")
+                }.joinToString("和")
+                if (policy.askEachTime && host !in mediaSessionAllowed) {
                     activity.runOnUiThread {
-                        if (granted) {
-                            runCatching { request.grant(resources) }
-                            audit("摄像头/麦克风", "允许", host, origin)
-                        } else {
-                            runCatching { request.deny() }
-                            audit("摄像头/麦克风", "拒绝", host, "系统未授予录音/摄像头权限")
-                            toast("麦克风/摄像头被系统拒绝，请在系统设置中允许「轻光浏览器」使用麦克风")
+                        pendingMediaRequest = PendingMediaRequest(host, label) { granted ->
+                            pendingMediaRequest = null
+                            if (granted) {
+                                mediaSessionAllowed.add(host)
+                                grantMedia(request, origin, host, needAudio, needVideo)
+                            } else {
+                                runCatching { request.deny() }
+                                audit("麦克风/摄像头", "拒绝", host, "按次询问：用户拒绝")
+                            }
                         }
                     }
+                    return
                 }
+                grantMedia(request, origin, host, needAudio, needVideo)
             }
 
             override fun onGeolocationPermissionsShowPrompt(
@@ -702,6 +745,7 @@ class BrowserController(private val activity: Activity) {
         webView.addJavascriptInterface(GestureBridge(), "QingGuangGestures")
         webView.addJavascriptInterface(BackupBridge(), "QingGuangBackup")
         webView.addJavascriptInterface(TtsBridge(), "QingGuangTts")
+        installDocumentStartScripts(webView)
 
         return webView
     }
@@ -735,7 +779,9 @@ class BrowserController(private val activity: Activity) {
 
     /** 夜间调色：先铺深色底，再尽早注入样式，减少白闪与延迟 */
     private fun injectNightCss(view: WebView) {
-        if (nightEnabledFor(view.url)) {
+        nightOn = nightEnabledFor(view.url)
+        if (!nightOn) topFrameInverted = false
+        if (nightOn) {
             view.setBackgroundColor(0xFF101214.toInt())
             val b = app.settings.nightBrightness / 100f
             val c = app.settings.nightContrast / 100f
@@ -746,6 +792,34 @@ class BrowserController(private val activity: Activity) {
             )
         } else {
             view.setBackgroundColor(0x00000000)
+        }
+    }
+
+    /** 由系统运行时权限决定是否授予网页的麦克风/摄像头请求 */
+    private fun grantMedia(
+        request: android.webkit.PermissionRequest,
+        origin: String,
+        host: String,
+        needAudio: Boolean,
+        needVideo: Boolean
+    ) {
+        val requester = mediaPermissionRequester
+        if (requester == null) {
+            runCatching { request.grant(request.resources) }
+            audit("麦克风/摄像头", "允许", host, origin)
+            return
+        }
+        requester(needAudio, needVideo) { granted ->
+            activity.runOnUiThread {
+                if (granted) {
+                    runCatching { request.grant(request.resources) }
+                    audit("麦克风/摄像头", "允许", host, origin)
+                } else {
+                    runCatching { request.deny() }
+                    audit("麦克风/摄像头", "拒绝", host, "系统未授予录音/摄像头权限")
+                    toast("麦克风/摄像头被系统拒绝，请在系统设置中允许「轻光浏览器」使用麦克风")
+                }
+            }
         }
     }
 
@@ -1266,8 +1340,45 @@ class BrowserController(private val activity: Activity) {
         }.onFailure { toast("下载失败：${it.message}") }
     }
 
+    /** 最近一次触摸是否落在网页的可拖拽元素上 */
+    private var lastTouchDraggable = false
+
+    /** 夜间模式：顶层页面是否已整体反色（决定 iframe 是否需要自行补色） */
+    private var nightOn = false
+    private var topFrameInverted = false
+
+    /**
+     * 把兼容层脚本提前到“页面脚本执行之前”注入，并覆盖 iframe。
+     * 语音合成的能力检测、details 展开、网页拖拽判断都依赖这个时机。
+     */
+    private fun installDocumentStartScripts(view: WebView) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        listOf(
+            DRAG_GUARD_JS,
+            DETAILS_POLYFILL_JS,
+            SPEECH_POLYFILL_JS,
+            NIGHT_FRAME_JS
+        ).forEach { script ->
+            runCatching { WebViewCompat.addDocumentStartJavaScript(view, script, setOf("*")) }
+        }
+    }
+
     /** 供网页 JS 调用的手势桥接 */
     inner class GestureBridge {
+        @JavascriptInterface
+        fun markTouch(draggable: Boolean) {
+            lastTouchDraggable = draggable
+        }
+
+        @JavascriptInterface
+        fun markTopInversion(inverted: Boolean) {
+            topFrameInverted = inverted
+        }
+
+        /** iframe 是否需要自行反色：夜间开启且顶层页面没有整体反色 */
+        @JavascriptInterface
+        fun needFrameInversion(): Boolean = nightOn && !topFrameInverted
+
         @JavascriptInterface
         fun navigate(delta: Int) {
             activity.runOnUiThread {
@@ -1827,18 +1938,56 @@ class BrowserController(private val activity: Activity) {
 
         /**
          * 原生 <details>/<summary> 兜底：部分页面在 summary 或子元素上 stopPropagation，
-         * 导致默认展开行为被吞掉。这里在 click 之后检查 open 是否变化，未变化则手动切换。
+         * 导致默认展开行为被吞掉。这里拦截点击后手动切换 open，保证一定能展开。
          */
         private const val DETAILS_POLYFILL_JS =
             "(function(){if(window.__qgDetailsHooked)return;window.__qgDetailsHooked=true;" +
+                "function hook(){if(!document.addEventListener)return;" +
                 "document.addEventListener('click',function(e){" +
                 "var t=e.target;if(!t||!t.closest)return;" +
                 "var s=t.closest('summary');if(!s)return;" +
                 "var d=s.parentElement;" +
                 "if(!d||!d.tagName||d.tagName.toLowerCase()!=='details')return;" +
+                "if(t.closest('a,button,input,textarea,select')){" +
                 "var before=!!d.open;" +
-                "setTimeout(function(){try{if(!!d.open===before)d.open=!before;}catch(err){}},0);" +
-                "},true);})()"
+                "setTimeout(function(){try{if(!!d.open===before)d.open=!before;}catch(err){}},0);return;}" +
+                "e.preventDefault();" +
+                "try{d.open=!d.open;}catch(err){}" +
+                "},true);}" +
+                "hook();})()"
+
+        /** iframe 补色：顶层页面是深色时，白底 iframe 自行反色（顶层已反色则跳过，避免双重反色） */
+        private const val NIGHT_FRAME_JS =
+            "(function(){try{" +
+                "if(!window.QingGuangGestures||!QingGuangGestures.needFrameInversion)return;" +
+                "function apply(){" +
+                "try{" +
+                "if(!QingGuangGestures.needFrameInversion())return;" +
+                "var b=document.body||document.documentElement;if(!b)return;" +
+                "var bg=getComputedStyle(b).backgroundColor||'';" +
+                "var m=bg.match(/rgba?\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)/i);" +
+                "var light=true;" +
+                "if(m){var l=(0.299*(+m[1])+0.587*(+m[2])+0.114*(+m[3]))/255;light=l>0.55;}" +
+                "if(!light)return;" +
+                "var s=document.getElementById('qg-night-frame');" +
+                "if(!s){s=document.createElement('style');s.id='qg-night-frame';" +
+                "(document.head||document.documentElement).appendChild(s);}" +
+                "s.textContent='html{filter:invert(1) hue-rotate(180deg);background:#101214!important}" +
+                "img,video,canvas,svg,picture{filter:invert(1) hue-rotate(180deg)!important}';" +
+                "}catch(e){}}" +
+                "if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',apply);" +
+                "else apply();" +
+                "}catch(e){}})()"
+
+        /** 记录手指按下的位置是否在可拖拽元素内，供长按命中判断使用 */
+        private const val DRAG_GUARD_JS =
+            "(function(){if(window.__qgDragGuard)return;window.__qgDragGuard=true;" +
+                "var SEL='[draggable=\"true\"],[draggable],.draggable,[data-drag],.drag-item,[data-draggable],[data-sortable]';" +
+                "document.addEventListener('touchstart',function(e){" +
+                "if(e.touches.length!==1)return;var d=false;" +
+                "try{var t=e.target;if(t&&t.closest)d=!!t.closest(SEL);}catch(err){}" +
+                "try{QingGuangGestures.markTouch(d);}catch(err){}" +
+                "},{capture:true,passive:true});})()"
 
         /** WebView 没有 speechSynthesis：用系统 TTS 桥接出最小的语音合成接口 */
         private val SPEECH_POLYFILL_JS = """
@@ -2036,6 +2185,7 @@ class BrowserController(private val activity: Activity) {
                 var s = document.getElementById('qg-night');
                 if (!s) { s = document.createElement('style'); s.id = 'qg-night'; root.appendChild(s); }
                 if (s.textContent !== css) s.textContent = css;
+                try { QingGuangGestures.markTopInversion(light); } catch (e) {}
               } catch (e) {}
             })();
         """.trimIndent()

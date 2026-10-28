@@ -317,6 +317,24 @@ fun BrowserScreen(controller: BrowserController) {
             }
         )
     }
+    controller.pendingMediaRequest?.let { pending ->
+        AlertDialog(
+            onDismissRequest = { pending.decide(false) },
+            title = { Text("${pending.host} 请求使用${pending.label}") },
+            text = {
+                Text(
+                    "该站点已开启「每次询问」，允许后本次会话内不再重复询问。",
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { pending.decide(true) }) { Text("允许") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pending.decide(false) }) { Text("拒绝") }
+            }
+        )
+    }
     if (showOrientation) {
         val activity = LocalContext.current as? Activity
         ScreenOrientationDialog(

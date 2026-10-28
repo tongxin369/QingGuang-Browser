@@ -81,6 +81,60 @@ class LocalSiteManager(private val context: Context) {
         )
     }
 
+    /** 导入 zip 压缩包（包含 html/css/js/图片的整站） */
+    suspend fun importZip(
+        uri: Uri,
+        displayName: String
+    ): LocalPage = withContext(Dispatchers.IO) {
+        val siteId = stableId(displayName)
+        val dir = siteDir(siteId).apply { deleteRecursively(); mkdirs() }
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                java.util.zip.ZipInputStream(input.buffered()).use { zip ->
+                    var entry = zip.nextEntry
+                    while (entry != null) {
+                        val name = entry.name.replace('\\', '/')
+                        // 防目录穿越：忽略绝对路径和 ..
+                        if (name.isNotBlank() && !name.startsWith("/") && !name.contains("..")) {
+                            val target = File(dir, name)
+                            if (entry.isDirectory) {
+                                target.mkdirs()
+                            } else {
+                                target.parentFile?.mkdirs()
+                                target.outputStream().use { output -> zip.copyTo(output) }
+                            }
+                        }
+                        zip.closeEntry()
+                        entry = zip.nextEntry
+                    }
+                }
+            } ?: throw IOException("无法读取所选压缩包")
+        } catch (e: Exception) {
+            dir.deleteRecursively()
+            throw IOException("压缩包导入失败：${e.message}")
+        }
+        // 压缩包有时会多一层根目录，自动向下找入口文件
+        var entryDir = dir
+        var prefix = ""
+        var entry = findEntry(entryDir)
+        while (entry == null && entryDir.listFiles()?.size == 1) {
+            val child = entryDir.listFiles()!!.first()
+            if (!child.isDirectory) break
+            entryDir = child
+            prefix = if (prefix.isEmpty()) child.name else "$prefix/${child.name}"
+            entry = findEntry(entryDir)
+        }
+        val html = entry ?: throw IOException("压缩包内没有找到 .html 文件")
+        val entryPath = if (prefix.isEmpty()) html else "$prefix/$html"
+        LocalPage(
+            siteId = siteId,
+            displayName = displayName,
+            entryUrl = urlFor(siteId, entryPath),
+            sourceUri = null,
+            sourceKind = null
+        )
+    }
+
     /** 把源码编辑器里的内容写回手机原文件（未关联原文件时只保留应用内副本） */
     suspend fun writeBackText(
         page: LocalPage,

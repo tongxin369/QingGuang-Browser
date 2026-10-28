@@ -11,16 +11,21 @@ data class SitePermission(
     val host: String,
     val allowGeo: Boolean = true,
     val allowCamera: Boolean = true,
+    val allowMic: Boolean = true,
     val allowPopup: Boolean = true,
     val allowDownload: Boolean = true,
     val allowJs: Boolean = true,
     val allowImages: Boolean = true,
+    /** 麦克风/摄像头按次询问（默认关闭，开启后每次网页请求都需要确认） */
+    val askEachTime: Boolean = false,
     /** 夜间网页调色：-1 跟随全局，0 强制关闭，1 强制开启 */
     val nightMode: Int = -1
 ) {
     fun summary(): String = buildList {
         if (allowGeo) add("定位") else add("禁定位")
-        if (allowCamera) add("摄像头/麦克风") else add("禁摄像头")
+        if (allowCamera) add("摄像头") else add("禁摄像头")
+        if (allowMic) add("麦克风") else add("禁麦克风")
+        if (askEachTime) add("每次询问")
         if (allowPopup) add("弹窗") else add("禁弹窗")
         if (allowDownload) add("下载") else add("禁下载")
         if (allowJs) add("JS") else add("禁JS")
@@ -44,10 +49,12 @@ object SitePermissionStore {
                     host = host,
                     allowGeo = obj.optBoolean("allowGeo", true),
                     allowCamera = obj.optBoolean("allowCamera", true),
+                    allowMic = obj.optBoolean("allowMic", true),
                     allowPopup = obj.optBoolean("allowPopup", true),
                     allowDownload = obj.optBoolean("allowDownload", true),
                     allowJs = obj.optBoolean("allowJs", true),
                     allowImages = obj.optBoolean("allowImages", true),
+                    askEachTime = obj.optBoolean("askEachTime", false),
                     nightMode = obj.optInt("nightMode", -1)
                 )
             }
@@ -61,10 +68,12 @@ object SitePermissionStore {
                 put("host", permission.host)
                 put("allowGeo", permission.allowGeo)
                 put("allowCamera", permission.allowCamera)
+                put("allowMic", permission.allowMic)
                 put("allowPopup", permission.allowPopup)
                 put("allowDownload", permission.allowDownload)
                 put("allowJs", permission.allowJs)
                 put("allowImages", permission.allowImages)
+                put("askEachTime", permission.askEachTime)
                 put("nightMode", permission.nightMode)
             })
         }

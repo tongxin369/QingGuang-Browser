@@ -669,7 +669,7 @@ private fun HomeMainPage(
         ) {
             Spacer(Modifier.height(extraTop))
             Column(Modifier.onSizeChanged { topHeightPx = it.height }) {
-                Box(Modifier.fillMaxWidth().height(56.dp)) {
+                Box(Modifier.fillMaxWidth().height(68.dp)) {
                     Row(
                         Modifier.align(Alignment.Center),
                         verticalAlignment = Alignment.CenterVertically
@@ -677,7 +677,7 @@ private fun HomeMainPage(
                         Image(
                             painter = painterResource(R.drawable.ic_launcher_foreground),
                             contentDescription = null,
-                            modifier = Modifier.size(50.dp)
+                            modifier = Modifier.size(62.dp)
                         )
                         Spacer(Modifier.width(10.dp))
                         Text(
@@ -963,6 +963,22 @@ private fun LocalPagesPage(
         }
     }
 
+    val openZipLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                runCatching {
+                    val name = queryDisplayName(context, uri)?.substringBeforeLast('.')
+                        ?: "本地网页"
+                    val page = app.localSites.importZip(uri, name)
+                    app.database.localPageDao().upsert(page)
+                    showEntryChooser(page)
+                }.onFailure { toast(context, it.message ?: "导入失败") }
+            }
+        }
+    }
+
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 24.dp)
@@ -1035,6 +1051,11 @@ private fun LocalPagesPage(
                                             Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
                                     )
                                 }
+                            )
+                        }
+                        ActionChip("打开压缩包") {
+                            openZipLauncher.launch(
+                                arrayOf("application/zip", "application/x-zip-compressed", "*/*")
                             )
                         }
                     }

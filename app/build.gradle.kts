@@ -75,6 +75,8 @@ dependencies {
 
     // WebView 现代 API：WebViewAssetLoader / WebSettingsCompat / WebViewFeature
     implementation("androidx.webkit:webkit:1.11.0")
+    // 长按拖拽排序（与 Trae_project_01 待办界面同一套实现）
+    implementation("org.burnoutcrew.composereorderable:reorderable:0.9.6")
 
     // 本地数据：书签、历史、下载记录
     implementation("androidx.room:room-runtime:2.6.1")
