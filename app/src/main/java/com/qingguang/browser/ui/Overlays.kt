@@ -344,9 +344,12 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
         }
     }
     LaunchedEffect(reorderState.draggingItemIndex) {
-        if (sortMode && reorderState.draggingItemIndex == null && sortItems.isNotEmpty()) {
-            sortItems.forEachIndexed { i, bookmark ->
-                app.database.bookmarkDao().updateSortOrder(bookmark.id, i + 1)
+        if (sortMode && reorderState.draggingItemIndex == null) {
+            // 先拷成不可变快照：写库是挂起操作，期间拖动/重排会修改 sortItems，
+            // 直接迭代会抛 ConcurrentModificationException（拖到屏幕顶部触发自动滚动时必现）
+            val ids = sortItems.map { it.id }
+            ids.forEachIndexed { i, id ->
+                app.database.bookmarkDao().updateSortOrder(id, i + 1)
             }
         }
     }

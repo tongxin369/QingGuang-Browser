@@ -587,6 +587,7 @@ class BrowserController(private val activity: Activity) {
 
             override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
                 if (view !== currentTab()?.webView) return
+                android.util.Log.i("QGJS", "start js=${view.settings.javaScriptEnabled} url=$url")
                 currentTab()?.showsHome = false
                 showHome = false
                 progress = 0.02f
@@ -650,6 +651,17 @@ class BrowserController(private val activity: Activity) {
 
             override fun onReceivedTitle(view: WebView, title: String?) {
                 if (view === currentTab()?.webView) refresh()
+            }
+
+            /** 把网页 console 输出转到 logcat（tag=QGJS），便于排查本地网页脚本问题 */
+            override fun onConsoleMessage(msg: android.webkit.ConsoleMessage?): Boolean {
+                if (msg != null) {
+                    android.util.Log.i(
+                        "QGJS",
+                        "${msg.message()} (${msg.sourceId()}:${msg.lineNumber()})"
+                    )
+                }
+                return true
             }
 
             override fun onCreateWindow(
@@ -1937,24 +1949,32 @@ class BrowserController(private val activity: Activity) {
                 "return c;}catch(e){return '';}})()"
 
         /**
-         * 原生 <details>/<summary> 兜底：部分页面在 summary 或子元素上 stopPropagation，
-         * 导致默认展开行为被吞掉。这里拦截点击后手动切换 open，保证一定能展开。
+         * 原生 <details>/<summary> 兜底：不改动原生行为，只在点击后检查 open 是否真的变化，
+         * 没变化才手动切换；另外补一层 touchend 兜底，防止 click 被页面脚本吞掉。
          */
         private const val DETAILS_POLYFILL_JS =
             "(function(){if(window.__qgDetailsHooked)return;window.__qgDetailsHooked=true;" +
-                "function hook(){if(!document.addEventListener)return;" +
-                "document.addEventListener('click',function(e){" +
-                "var t=e.target;if(!t||!t.closest)return;" +
-                "var s=t.closest('summary');if(!s)return;" +
-                "var d=s.parentElement;" +
-                "if(!d||!d.tagName||d.tagName.toLowerCase()!=='details')return;" +
-                "if(t.closest('a,button,input,textarea,select')){" +
+                "var tap=null,clickSeen=false;" +
+                "function summaryOf(target){try{return target&&target.closest?target.closest('summary'):null;}catch(e){return null;}}" +
+                "function toggle(target){" +
+                "var s=summaryOf(target);if(!s)return;" +
+                "var d=s.parentElement;if(!d||!d.tagName||d.tagName.toLowerCase()!=='details')return;" +
                 "var before=!!d.open;" +
-                "setTimeout(function(){try{if(!!d.open===before)d.open=!before;}catch(err){}},0);return;}" +
-                "e.preventDefault();" +
-                "try{d.open=!d.open;}catch(err){}" +
-                "},true);}" +
-                "hook();})()"
+                "setTimeout(function(){try{if(!!d.open===before)d.open=!before;}catch(e){}},0);" +
+                "}" +
+                "document.addEventListener('click',function(e){clickSeen=true;toggle(e.target);},true);" +
+                "document.addEventListener('touchstart',function(e){" +
+                "if(e.touches.length!==1)return;var t=e.touches[0];" +
+                "tap={x:t.clientX,y:t.clientY,time:Date.now(),target:e.target};clickSeen=false;" +
+                "},{capture:true,passive:true});" +
+                "document.addEventListener('touchend',function(e){" +
+                "var p=tap;if(!p)return;tap=null;" +
+                "var t=e.changedTouches&&e.changedTouches[0];" +
+                "if(t&&(Math.abs(t.clientX-p.x)>12||Math.abs(t.clientY-p.y)>12))return;" +
+                "if(Date.now()-p.time>800)return;" +
+                "setTimeout(function(){if(!clickSeen)toggle(p.target);},300);" +
+                "},{capture:true,passive:true});" +
+                "})()"
 
         /** iframe 补色：顶层页面是深色时，白底 iframe 自行反色（顶层已反色则跳过，避免双重反色） */
         private const val NIGHT_FRAME_JS =
