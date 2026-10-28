@@ -185,6 +185,7 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
     var editTitle by remember { mutableStateOf("") }
     var editUrl by remember { mutableStateOf("") }
     var moveTarget by remember { mutableStateOf<com.qingguang.browser.data.Bookmark?>(null) }
+    var moveSelectionOpen by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<com.qingguang.browser.data.BookmarkFolder?>(null) }
     var renameName by remember { mutableStateOf("") }
     var deleteFolder by remember { mutableStateOf<com.qingguang.browser.data.BookmarkFolder?>(null) }
@@ -475,6 +476,9 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                         else "首页快捷入口已满，或这些书签已在首页"
                     }
                 }) { Text("添加到首页") }
+                TextButton(onClick = {
+                    if (selectedIds.isNotEmpty()) moveSelectionOpen = true
+                }) { Text("移动") }
             }
         }
         message?.let {
@@ -988,6 +992,39 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
             },
             confirmButton = {
                 TextButton(onClick = { moveTarget = null }) { Text("取消") }
+            }
+        )
+    }
+
+    if (moveSelectionOpen) {
+        val flatFolders = flattenFolders(folders)
+        fun moveSelectedTo(folderId: Long) {
+            val ids = selectedIds.toList()
+            scope.launch {
+                ids.forEach { app.database.bookmarkDao().moveToFolder(it, folderId) }
+                message = "已移动 ${ids.size} 个书签"
+            }
+            selectedIds.clear()
+            selecting = false
+            moveSelectionOpen = false
+        }
+        AlertDialog(
+            onDismissRequest = { moveSelectionOpen = false },
+            title = { Text("移动 ${selectedIds.size} 个书签到") },
+            text = {
+                LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                    item {
+                        FolderChoiceRow("未分类", selected = false) { moveSelectedTo(0L) }
+                    }
+                    items(flatFolders, key = { it.first.id }) { (folder, depth) ->
+                        FolderChoiceRow("    ".repeat(depth) + folder.name, selected = false) {
+                            moveSelectedTo(folder.id)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { moveSelectionOpen = false }) { Text("取消") }
             }
         )
     }
@@ -2773,8 +2810,19 @@ private fun AuditLogPage() {
         .observeAll()
         .collectAsStateWithLifecycle(initialValue = emptyList())
     var typeFilter by remember { mutableStateOf("全部") }
+    var timeFilter by remember { mutableStateOf("全部") }
     var keyword by remember { mutableStateOf("") }
     var exportHint by remember { mutableStateOf<String?>(null) }
+
+    val now = System.currentTimeMillis()
+    val todayStart = remember(now / 60_000) {
+        java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+    }
 
     val filtered = logs.filter { log ->
         val typeOk = when (typeFilter) {
@@ -2783,10 +2831,16 @@ private fun AuditLogPage() {
             "站点数据" -> log.action == "站点数据"
             else -> true
         }
+        val timeOk = when (timeFilter) {
+            "今天" -> log.createdAt >= todayStart
+            "近7天" -> log.createdAt >= todayStart - 6 * 24 * 60 * 60 * 1000L
+            "近30天" -> log.createdAt >= todayStart - 29 * 24 * 60 * 60 * 1000L
+            else -> true
+        }
         val key = keyword.trim()
         val keyOk = key.isBlank() || log.host.contains(key, ignoreCase = true) ||
             log.detail.contains(key, ignoreCase = true)
-        typeOk && keyOk
+        typeOk && timeOk && keyOk
     }
 
     val exportLauncher = rememberLauncherForActivityResult(
@@ -2854,6 +2908,13 @@ private fun AuditLogPage() {
                     selected = typeFilter == type,
                     onClick = { typeFilter = type },
                     label = { Text(type, fontSize = 12.sp) }
+                )
+            }
+            listOf("全部", "今天", "近7天", "近30天").forEach { range ->
+                FilterChip(
+                    selected = timeFilter == range,
+                    onClick = { timeFilter = range },
+                    label = { Text(range, fontSize = 12.sp) }
                 )
             }
         }
