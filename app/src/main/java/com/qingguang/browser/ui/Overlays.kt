@@ -1511,6 +1511,8 @@ private fun DownloadsPage(controller: BrowserController) {
     var showDirDialog by remember { mutableStateOf(false) }
     var dirText by remember { mutableStateOf(app.settings.downloadSubDir) }
     var pendingDelete by remember { mutableStateOf<com.qingguang.browser.data.DownloadRecord?>(null) }
+    var failedHint by remember { mutableStateOf<com.qingguang.browser.data.DownloadRecord?>(null) }
+    var confirmClearFinished by remember { mutableStateOf(false) }
     var subDir by remember { mutableStateOf(app.settings.downloadSubDir) }
 
     // 轮询系统下载管理器，刷新进度与状态
@@ -1585,6 +1587,11 @@ private fun DownloadsPage(controller: BrowserController) {
                 dirText = subDir
                 showDirDialog = true
             }) { Text("更改") }
+            if (downloads.any { it.status == "下载完成" }) {
+                TextButton(onClick = { confirmClearFinished = true }) {
+                    Text("清除已完成", fontSize = 12.sp)
+                }
+            }
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Text(
@@ -1707,7 +1714,10 @@ private fun DownloadsPage(controller: BrowserController) {
                                 }
                             },
                             modifier = Modifier.clickable {
-                                if (finished || record.localUri != null) openRecord(record)
+                                when {
+                                    finished || record.localUri != null -> openRecord(record)
+                                    failed -> failedHint = record
+                                }
                             }
                         )
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -1754,6 +1764,63 @@ private fun DownloadsPage(controller: BrowserController) {
                     }) { Text("用下载根目录") }
                     TextButton(onClick = { showDirDialog = false }) { Text("取消") }
                 }
+            }
+        )
+    }
+
+    failedHint?.let { record ->
+        AlertDialog(
+            onDismissRequest = { failedHint = null },
+            title = { Text("下载失败") },
+            text = {
+                Column {
+                    Text(
+                        record.fileName,
+                        fontSize = 13.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "常见原因：\n· 链接已过期或需要登录（重新进入网页后再下载）\n" +
+                            "· 存储空间不足\n· 网络中断或站点拒绝访问\n\n" +
+                            "可以点「重试」重新入队，或回到网页刷新后重新下载。",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    controller.retryDownload(record.url, record.fileName, record.mimeType)
+                    scope.launch { app.database.downloadDao().delete(record.id) }
+                    failedHint = null
+                }) { Text("重试") }
+            },
+            dismissButton = {
+                TextButton(onClick = { failedHint = null }) { Text("关闭") }
+            }
+        )
+    }
+
+    if (confirmClearFinished) {
+        AlertDialog(
+            onDismissRequest = { confirmClearFinished = false },
+            title = { Text("清除已完成的下载记录？") },
+            text = { Text("只清理下载中心里的记录，已下载的文件仍保留在下载目录。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val finishedIds = downloads
+                        .filter { it.status == "下载完成" }
+                        .map { it.id }
+                    scope.launch {
+                        finishedIds.forEach { app.database.downloadDao().delete(it) }
+                    }
+                    confirmClearFinished = false
+                }) { Text("清除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClearFinished = false }) { Text("取消") }
             }
         )
     }
@@ -2753,11 +2820,21 @@ private fun PermissionCenterPage(controller: BrowserController) {
 
     editing?.let { origin ->
         var draft by remember(origin) { mutableStateOf(origin) }
+        var history by remember(origin.host, refreshKey) {
+            mutableStateOf<List<com.qingguang.browser.data.AuditLog>>(emptyList())
+        }
+        LaunchedEffect(origin.host, refreshKey) {
+            history = app.database.auditLogDao().byHost(origin.host)
+        }
         AlertDialog(
             onDismissRequest = { editing = null },
             title = { Text(origin.host, fontSize = 16.sp) },
             text = {
-                Column {
+                Column(
+                    Modifier
+                        .heightIn(max = 460.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
                     PermissionSwitch("定位", draft.allowGeo) { draft = draft.copy(allowGeo = it) }
                     PermissionSwitch("摄像头", draft.allowCamera) {
                         draft = draft.copy(allowCamera = it)
@@ -2787,6 +2864,24 @@ private fun PermissionCenterPage(controller: BrowserController) {
                                 selected = draft.nightMode == value,
                                 onClick = { draft = draft.copy(nightMode = value) },
                                 label = { Text(label, fontSize = 11.sp) }
+                            )
+                        }
+                    }
+                    // 该站点的权限变更时间线，只展示最近 8 条
+                    if (history.isNotEmpty()) {
+                        HorizontalDivider(Modifier.padding(vertical = 10.dp))
+                        Text(
+                            "该站点的变更记录",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        val fmt = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
+                        history.take(8).forEach { log ->
+                            Text(
+                                "${fmt.format(Date(log.createdAt))}  ${log.action}·${log.result}  ${log.detail}",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 2.dp)
                             )
                         }
                     }

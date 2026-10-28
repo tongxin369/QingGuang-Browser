@@ -232,6 +232,7 @@ class BrowserController(private val activity: Activity) {
         renderContainer()
         refresh()
         schedulePrewarmWebView()
+        startReclaimLoop()
     }
 
     fun newTab(): BrowserTab {
@@ -367,10 +368,37 @@ class BrowserController(private val activity: Activity) {
 
     /** 非当前标签暂停网页计时器/动画，降低后台占用；切回时恢复，不影响已打开页面 */
     private fun updateTabActiveState() {
+        val now = android.os.SystemClock.uptimeMillis()
         tabs.forEachIndexed { index, tab ->
             val active = index == activeIndex && !tab.showsHome
+            if (active) {
+                tabHiddenAt.remove(tab.id)
+            } else if (tabHiddenAt[tab.id] == null) {
+                tabHiddenAt[tab.id] = now
+            }
             runCatching {
                 if (active) tab.webView.onResume() else tab.webView.onPause()
+            }
+        }
+    }
+
+    /** 后台标签的隐藏起始时间，用于闲置回收 */
+    private val tabHiddenAt = mutableMapOf<String, Long>()
+    private var reclaimJob: kotlinx.coroutines.Job? = null
+
+    /** 后台标签闲置 5 分钟后释放缓存内存（不销毁页面，切回不重载） */
+    private fun startReclaimLoop() {
+        if (reclaimJob != null) return
+        reclaimJob = scope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(60_000)
+                val now = android.os.SystemClock.uptimeMillis()
+                tabs.forEachIndexed { index, tab ->
+                    val idle = now - (tabHiddenAt[tab.id] ?: now)
+                    if (index != activeIndex && !tab.locked && idle > 5 * 60_000) {
+                        runCatching { tab.webView.freeMemory() }
+                    }
+                }
             }
         }
     }
@@ -868,8 +896,15 @@ class BrowserController(private val activity: Activity) {
             val b = brightness / 100f
             val c = contrast / 100f
             val extra = " brightness($b) contrast($c)"
+            val noInvert = app.settings.isNightNoInvert(host)
+            val imgExtra = " brightness(${app.settings.nightImageBrightness / 100f})"
             view.evaluateJavascript(
-                NIGHT_CSS_JS.replace("/*EXTRA*/", "window.__qgNightExtra='$extra';"),
+                NIGHT_CSS_JS.replace(
+                    "/*EXTRA*/",
+                    "window.__qgNightExtra='$extra';" +
+                        "window.__qgNightNoInvert=" + noInvert + ";" +
+                        "window.__qgNightImg='$imgExtra';"
+                ),
                 null
             )
         } else {
@@ -910,10 +945,26 @@ class BrowserController(private val activity: Activity) {
         tabs.forEach { injectNightCss(it.webView) }
     }
 
-    /** 主题模式切换后重新应用并刷新网页 */
+    /** 主题模式切换：只重新应用样式，不刷新网页（网页一刷新当前子页面就被重置了） */
     fun onThemeModeChanged() {
-        tabs.forEach { applyDarkMode(it.webView) }
-        reload()
+        tabs.forEach { tab ->
+            val view = tab.webView
+            applyDarkMode(view)
+            if (nightEnabledFor(view.url)) {
+                injectNightCss(view)
+            } else {
+                removeNightCss(view)
+            }
+        }
+        currentTab()?.let { updatePageTheme(it.webView) }
+    }
+
+    /** 关闭夜间调色：移除注入的样式与影子树补色，页面恢复原样 */
+    private fun removeNightCss(view: WebView) {
+        nightOn = false
+        topFrameInverted = false
+        view.setBackgroundColor(0x00000000)
+        view.evaluateJavascript(REMOVE_NIGHT_JS, null)
     }
 
     private fun isSystemDark(): Boolean =
@@ -1992,6 +2043,8 @@ class BrowserController(private val activity: Activity) {
         tts = null
         ttsReady = false
         container?.removeAllViews()
+        reclaimJob?.cancel()
+        reclaimJob = null
         spareWebView?.let { runCatching { it.destroy() } }
         spareWebView = null
         tabs.forEach {
@@ -2272,18 +2325,27 @@ class BrowserController(private val activity: Activity) {
                   light = lum > 0.55;
                 }
                 var extra = window.__qgNightExtra || '';
-                var css = light
-                  ? 'html{filter:invert(1) hue-rotate(180deg)' + extra + ';background:#101214!important}' +
-                    'img,video,canvas,svg,picture{filter:invert(1) hue-rotate(180deg)!important}'
-                  : 'html{color-scheme:dark;background:#101214!important;filter:' + extra + '}';
+                var noInvert = !!window.__qgNightNoInvert;
+                var imgExtra = window.__qgNightImg || '';
+                var css;
+                if (light && !noInvert) {
+                  css = 'html{filter:invert(1) hue-rotate(180deg)' + extra + ';background:#101214!important}' +
+                    'img,video,canvas,svg,picture{filter:invert(1) hue-rotate(180deg)' + imgExtra + '!important}';
+                } else if (light) {
+                  /* 本站不反色：保留原始配色，只按亮度/对比度轻微压暗 */
+                  css = 'html{background:#f4f4f4!important;filter:' + extra + '}';
+                } else {
+                  css = 'html{color-scheme:dark;background:#101214!important;filter:' + extra + '}' +
+                    'img,video,canvas,svg,picture{filter:' + (imgExtra ? imgExtra.trim() : 'none') + '!important}';
+                }
                 var s = document.getElementById('qg-night');
                 if (!s) { s = document.createElement('style'); s.id = 'qg-night'; root.appendChild(s); }
                 if (s.textContent !== css) s.textContent = css;
                 /* Shadow DOM 补色：整页反色后影子树里的图片会被一起反色，需要再反一次还原；
                    深色站点则给影子树补 color-scheme，避免内部控件仍是亮色 */
-                var shadowCss = light
+                var shadowCss = (light && !noInvert)
                   ? 'img,video,canvas,svg,picture{filter:invert(1) hue-rotate(180deg)!important}'
-                  : ':host{color-scheme:dark;background:#101214!important}';
+                  : (light ? '' : ':host{color-scheme:dark;background:#101214!important}');
                 function patch(node) {
                   var nodes;
                   try { nodes = node.querySelectorAll('*'); } catch (e) { return; }
@@ -2308,6 +2370,8 @@ class BrowserController(private val activity: Activity) {
                 var tries = 0;
                 function later() {
                   if (tries++ > 8) return;
+                  /* 夜间样式已被关闭（运行时切主题）时同步停止补色 */
+                  if (!document.getElementById('qg-night')) return;
                   try { patch(document); } catch (e) {}
                   setTimeout(later, 1200);
                 }
@@ -2316,6 +2380,19 @@ class BrowserController(private val activity: Activity) {
               } catch (e) {}
             })();
         """.trimIndent()
+
+        /** 运行时关闭夜间调色：移除顶层/iframe/影子树的补色样式 */
+        private const val REMOVE_NIGHT_JS =
+            "(function(){try{" +
+                "var ids=['qg-night','qg-night-frame'];" +
+                "for(var i=0;i<ids.length;i++){var s=document.getElementById(ids[i]);if(s&&s.parentNode)s.parentNode.removeChild(s);}" +
+                "function clean(root){try{var n=root.querySelectorAll('*');" +
+                "for(var j=0;j<n.length;j++){var sr=n[j].shadowRoot;if(!sr)continue;" +
+                "var st=sr.getElementById&&sr.getElementById('qg-night-shadow');" +
+                "if(st&&st.parentNode)st.parentNode.removeChild(st);clean(sr);}}catch(e){}}" +
+                "clean(document);" +
+                "try{QingGuangGestures.markTopInversion(false);}catch(e){}" +
+                "}catch(e){}})()"
 
         private const val AD_HIDE_JS =
             "(function(){if(document.getElementById('qg-adblock'))return;" +

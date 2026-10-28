@@ -9,7 +9,13 @@ import com.qingguang.browser.util.SettingsStore
 
 class App : Application() {
 
-    val database: AppDatabase by lazy { AppDatabase.get(this) }
+    val database: AppDatabase by lazy {
+        android.util.Log.i(
+            "QGStart",
+            "database open +${android.os.SystemClock.uptimeMillis() - createdAtUptime}ms"
+        )
+        AppDatabase.get(this)
+    }
     val settings: SettingsStore by lazy { SettingsStore(this) }
     val localSites: LocalSiteManager by lazy { LocalSiteManager(this) }
     val backups: BackupManager by lazy { BackupManager(this, settings) }

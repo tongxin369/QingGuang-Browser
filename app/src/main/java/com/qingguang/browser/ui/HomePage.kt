@@ -23,12 +23,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -56,6 +58,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -72,6 +75,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -92,6 +96,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
@@ -659,12 +664,32 @@ private fun HomeMainPage(
     val density = LocalDensity.current
     val gridHeight = SHORTCUT_ROW_PITCH * 4
 
+    // 键盘弹起时窗口高度被压缩（windowSoftInputMode=adjustResize），固定高度的快捷格会被挤压、
+    // 图标被裁切。adjustResize 下 Compose 拿不到 IME insets，这里用可见区域变化判断键盘是否打开：
+    // 键盘打开时收起快捷入口模块，只留 logo + 搜索 + 应用入口，键盘关闭自动恢复
+    val rootView = LocalView.current
+    var imeVisible by remember { mutableStateOf(false) }
+    DisposableEffect(rootView) {
+        val listener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
+            val rect = android.graphics.Rect()
+            rootView.getWindowVisibleDisplayFrame(rect)
+            val rootHeight = rootView.rootView.height
+            imeVisible = rootHeight > 0 && (rootHeight - rect.bottom) > rootHeight * 0.15f
+        }
+        rootView.viewTreeObserver.addOnGlobalLayoutListener(listener)
+        onDispose { rootView.viewTreeObserver.removeOnGlobalLayoutListener(listener) }
+    }
+
     // 首页固定不滚动：底部基准不变，多余空间放到顶部，让标题区贴着第一行图标
     BoxWithConstraints(Modifier.fillMaxSize()) {
         var topHeightPx by remember { mutableStateOf(0) }
         val topHeightDp = with(density) { topHeightPx.toDp() }
-        val extraTop = (maxHeight - 12.dp - SHORTCUT_BOTTOM_GAP - gridHeight - topHeightDp)
-            .coerceAtLeast(0.dp)
+        val extraTop = if (imeVisible) {
+            0.dp
+        } else {
+            (maxHeight - 12.dp - SHORTCUT_BOTTOM_GAP - gridHeight - topHeightDp)
+                .coerceAtLeast(0.dp)
+        }
         Column(
             Modifier
                 .fillMaxSize()
@@ -780,28 +805,32 @@ private fun HomeMainPage(
                 }
                 Spacer(Modifier.height(14.dp))
 
-                ShortcutHeader(pageLabel = null, onShowHint = onShowHint)
+                if (!imeVisible) {
+                    ShortcutHeader(pageLabel = null, onShowHint = onShowHint)
 
-                if (items.isEmpty()) {
-                    Text(
-                        "还没有首页快捷入口。添加书签时勾选「添加到首页」，或在书签长按菜单里选「添加到首页」。",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(vertical = 12.dp)
-                    )
+                    if (items.isEmpty()) {
+                        Text(
+                            "还没有首页快捷入口。添加书签时勾选「添加到首页」，或在书签长按菜单里选「添加到首页」。",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 12.dp)
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
                 }
-                Spacer(Modifier.height(10.dp))
             }
-            HomeShortcutGrid(
-                cells = shortcutCells,
-                columns = HOME_COLUMNS,
-                allItems = allItems,
-                onOpen = onOpenItem,
-                onLongPress = onLongPress,
-                onMerge = onMerge,
-                onMoveToSlot = onMoveToSlot,
-                modifier = Modifier.fillMaxWidth().height(gridHeight)
-            )
+            if (!imeVisible) {
+                HomeShortcutGrid(
+                    cells = shortcutCells,
+                    columns = HOME_COLUMNS,
+                    allItems = allItems,
+                    onOpen = onOpenItem,
+                    onLongPress = onLongPress,
+                    onMerge = onMerge,
+                    onMoveToSlot = onMoveToSlot,
+                    modifier = Modifier.fillMaxWidth().height(gridHeight)
+                )
+            }
         }
     }
 }
@@ -835,11 +864,15 @@ private fun LocalPagesPage(
     var renameTarget by remember { mutableStateOf<LocalPage?>(null) }
     var renameText by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<LocalPage?>(null) }
+    var siteQuery by remember { mutableStateOf("") }
+    var siteSizes by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
 
     fun loadSiteFiles(page: LocalPage) {
         scope.launch {
             val files = withContext(Dispatchers.IO) { app.localSites.htmlFiles(page) }
+            val size = withContext(Dispatchers.IO) { app.localSites.siteSizeBytes(page.siteId) }
             siteFiles = siteFiles + (page.siteId to files)
+            siteSizes = siteSizes + (page.siteId to size)
             expandedDirs = emptySet()
         }
     }
@@ -1145,6 +1178,25 @@ private fun LocalPagesPage(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 4.dp)
             )
+            if (localPages.size > 3) {
+                OutlinedTextField(
+                    value = siteQuery,
+                    onValueChange = { siteQuery = it },
+                    singleLine = true,
+                    placeholder = { Text("搜索本地网页", fontSize = 13.sp) },
+                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (siteQuery.isNotBlank()) {
+                            IconButton(onClick = { siteQuery = "" }) {
+                                Icon(Icons.Filled.Close, contentDescription = "清除搜索")
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp)
+                )
+            }
         }
         if (localPages.isEmpty()) {
             item {
@@ -1156,7 +1208,10 @@ private fun LocalPagesPage(
                 )
             }
         } else {
-            items(localPages, key = { it.siteId }) { page ->
+            val shownPages = localPages.filter {
+                siteQuery.isBlank() || it.displayName.contains(siteQuery.trim(), ignoreCase = true)
+            }
+            items(shownPages, key = { it.siteId }) { page ->
                 Column(
                     Modifier
                         .fillMaxWidth()
@@ -1200,6 +1255,15 @@ private fun LocalPagesPage(
                     }
                     if (treeSiteId == page.siteId) {
                         val files = siteFiles[page.siteId]
+                        if (files != null) {
+                            val sizeText = siteSizes[page.siteId]?.let { " · ${formatSize(it)}" }.orEmpty()
+                            Text(
+                                "共 ${files.size} 个网页$sizeText",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 20.dp, bottom = 4.dp)
+                            )
+                        }
                         when {
                             files == null -> Text(
                                 "正在读取目录…",
@@ -1466,6 +1530,14 @@ private fun LocalPagesPage(
 private class LocalDirNode(val name: String, val path: String) {
     val dirs = linkedMapOf<String, LocalDirNode>()
     val files = mutableListOf<Pair<String, String>>()
+}
+
+/** 字节数转可读文本，用于显示站点占用空间 */
+private fun formatSize(bytes: Long): String = when {
+    bytes >= 1024L * 1024 * 1024 -> String.format(java.util.Locale.US, "%.1f GB", bytes / 1073741824.0)
+    bytes >= 1024L * 1024 -> String.format(java.util.Locale.US, "%.1f MB", bytes / 1048576.0)
+    bytes >= 1024L -> "${bytes / 1024} KB"
+    else -> "$bytes B"
 }
 
 private fun buildLocalTree(files: List<String>): LocalDirNode {

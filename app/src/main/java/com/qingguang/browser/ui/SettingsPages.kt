@@ -349,6 +349,54 @@ private fun AppearanceSettings(controller: BrowserController) {
                 modifier = Modifier.padding(horizontal = 18.dp)
             ) { Text("清除该站点的亮度记忆", fontSize = 12.sp) }
         }
+
+        // 图片亮度与整页反色分开调整：反色后图片常偏灰，可单独提亮
+        var imageBrightness by remember { mutableStateOf(app.settings.nightImageBrightness) }
+        Text(
+            "图片亮度 $imageBrightness%",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.secondary,
+            modifier = Modifier.padding(horizontal = 18.dp)
+        )
+        Slider(
+            value = imageBrightness.toFloat(),
+            onValueChange = {
+                imageBrightness = it.roundToInt()
+                app.settings.nightImageBrightness = imageBrightness
+                controller.applyNightTuning()
+            },
+            valueRange = 50f..150f
+        )
+
+        // 反色后更丑的站点可以单独关掉反色，保留原始配色
+        if (currentHost.isNotBlank()) {
+            var noInvert by remember(currentHost) {
+                mutableStateOf(app.settings.isNightNoInvert(currentHost))
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("本站不反色", fontSize = 13.sp)
+                    Text(
+                        "保留原始配色，只按上面的亮度/对比度压暗",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = noInvert,
+                    onCheckedChange = { value ->
+                        noInvert = value
+                        app.settings.setNightNoInvert(currentHost, value)
+                        controller.applyNightTuning()
+                    }
+                )
+            }
+        }
     }
 
     SettingsGroup("工具栏")

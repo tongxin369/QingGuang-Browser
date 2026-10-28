@@ -204,6 +204,9 @@ interface AuditLogDao {
     @Insert
     suspend fun insert(log: AuditLog): Long
 
+    @Query("SELECT * FROM audit_logs WHERE host = :host ORDER BY createdAt DESC LIMIT 50")
+    suspend fun byHost(host: String): List<AuditLog>
+
     @Query("DELETE FROM audit_logs WHERE id NOT IN (SELECT id FROM audit_logs ORDER BY createdAt DESC LIMIT 500)")
     suspend fun prune()
 

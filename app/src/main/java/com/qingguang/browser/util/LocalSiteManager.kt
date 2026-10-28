@@ -39,6 +39,10 @@ class LocalSiteManager(private val context: Context) {
 
     private val rootDir: File = File(context.filesDir, "sites").apply { mkdirs() }
 
+    /** 站点副本占用的空间（字节），用于在管理页展示 */
+    fun siteSizeBytes(siteId: String): Long =
+        siteDir(siteId).walkTopDown().filter { it.isFile }.sumOf { it.length() }
+
     suspend fun importSingleHtml(
         uri: Uri,
         displayName: String,

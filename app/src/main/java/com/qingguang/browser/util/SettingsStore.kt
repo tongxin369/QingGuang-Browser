@@ -172,6 +172,39 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_SITE_NIGHT_TUNING, "").orEmpty()
         set(value) = prefs.edit().putString(KEY_SITE_NIGHT_TUNING, value).apply()
 
+    /** 夜间网页里的图片亮度（%），与整页反色分开调整 */
+    var nightImageBrightness: Int
+        get() = prefs.getInt(KEY_NIGHT_IMAGE_BRIGHTNESS, 100)
+        set(value) = prefs.edit()
+            .putInt(KEY_NIGHT_IMAGE_BRIGHTNESS, value.coerceIn(50, 150))
+            .apply()
+
+    /** 夜间"不反色"站点列表（逗号分隔）：这些站点保留原配色，只做轻微调暗 */
+    var nightNoInvertHosts: String
+        get() = prefs.getString(KEY_NIGHT_NO_INVERT, "").orEmpty()
+        set(value) = prefs.edit().putString(KEY_NIGHT_NO_INVERT, value).apply()
+
+    fun isNightNoInvert(host: String): Boolean {
+        val key = host.trim().lowercase()
+        if (key.isBlank()) return false
+        return nightNoInvertHosts
+            .split(',')
+            .map { it.trim() }
+            .any { it.isNotBlank() && it == key }
+    }
+
+    fun setNightNoInvert(host: String, enabled: Boolean) {
+        val key = host.trim().lowercase()
+        if (key.isBlank()) return
+        val set = nightNoInvertHosts
+            .split(',')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .toMutableSet()
+        if (enabled) set.add(key) else set.remove(key)
+        nightNoInvertHosts = set.joinToString(",")
+    }
+
     /** 取某站点的夜间调色参数；该站点没有单独记忆时回退到全局值 */
     fun nightTuningFor(host: String): Pair<Int, Int> {
         val key = host.trim().lowercase()
@@ -251,6 +284,8 @@ class SettingsStore(context: Context) {
         private const val KEY_READER_LINE_PERCENT = "reader_line_percent"
         private const val KEY_SITE_PERMISSIONS = "site_permissions"
         private const val KEY_SITE_NIGHT_TUNING = "site_night_tuning"
+        private const val KEY_NIGHT_IMAGE_BRIGHTNESS = "night_image_brightness"
+        private const val KEY_NIGHT_NO_INVERT = "night_no_invert"
 
         const val DEFAULT_SEARCH_ENGINE = "https://www.bing.com/search?q=%s"
         const val DESKTOP_UA =
