@@ -291,6 +291,11 @@ class SettingsStore(context: Context) {
         siteNightTuningJson = obj.toString()
     }
 
+    /** 网页拖拽优先：长按图片/链接时不弹出应用菜单，把手势交给网页自身拖拽 */
+    var webDragPriority: Boolean
+        get() = prefs.getBoolean(KEY_WEB_DRAG_PRIORITY, true)
+        set(value) = prefs.edit().putBoolean(KEY_WEB_DRAG_PRIORITY, value).apply()
+
     /** 重新启动后恢复上次打开的标签页 */
     var restoreTabs: Boolean
         get() = prefs.getBoolean(KEY_RESTORE_TABS, true)
@@ -409,6 +414,7 @@ class SettingsStore(context: Context) {
         private const val KEY_TAB_PANEL_HEIGHT = "tab_panel_height"
         private const val KEY_NIGHT_WARMTH = "night_warmth"
         private const val KEY_SITE_NIGHT_WARMTH = "site_night_warmth"
+        private const val KEY_WEB_DRAG_PRIORITY = "web_drag_priority"
         private const val KEY_RESTORE_TABS = "restore_tabs"
         private const val KEY_LAST_TABS = "last_tabs"
         private const val KEY_TAB_GROUP_BY_SITE = "tab_group_by_site"

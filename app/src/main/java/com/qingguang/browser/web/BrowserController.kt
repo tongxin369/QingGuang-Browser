@@ -741,25 +741,30 @@ class BrowserController(private val activity: Activity) {
     private fun createWebView(): WebView {
         val webView = HitTestWebView(activity)
         webView.onHitTestLongPress = { result ->
-            // 网页自身可拖拽的元素（聚合平台图标等）交给网页处理，避免我们的菜单抢走手势
-            val skip = lastTouchDraggable
-            val pageUrl = result.extra ?: ""
-            when {
-                skip -> false
-                result.type == WebView.HitTestResult.IMAGE_TYPE ||
-                    result.type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE -> {
-                    longPressTarget = LongPressTarget(imageUrl = pageUrl)
-                    true
+            // 网页拖拽优先（默认开启）：不消费长按，把手势完整交给网页自身的拖拽逻辑
+            if (app.settings.webDragPriority) {
+                false
+            } else {
+                // 网页自身可拖拽的元素（聚合平台图标等）交给网页处理，避免我们的菜单抢走手势
+                val skip = lastTouchDraggable
+                val pageUrl = result.extra ?: ""
+                when {
+                    skip -> false
+                    result.type == WebView.HitTestResult.IMAGE_TYPE ||
+                        result.type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE -> {
+                        longPressTarget = LongPressTarget(imageUrl = pageUrl)
+                        true
+                    }
+                    result.type == WebView.HitTestResult.SRC_ANCHOR_TYPE -> {
+                        longPressTarget = LongPressTarget(linkUrl = pageUrl)
+                        true
+                    }
+                    result.type == WebView.HitTestResult.IMAGE_ANCHOR_TYPE -> {
+                        longPressTarget = LongPressTarget(linkUrl = pageUrl)
+                        true
+                    }
+                    else -> false
                 }
-                result.type == WebView.HitTestResult.SRC_ANCHOR_TYPE -> {
-                    longPressTarget = LongPressTarget(linkUrl = pageUrl)
-                    true
-                }
-                result.type == WebView.HitTestResult.IMAGE_ANCHOR_TYPE -> {
-                    longPressTarget = LongPressTarget(linkUrl = pageUrl)
-                    true
-                }
-                else -> false
             }
         }
         val settings = webView.settings
@@ -1708,8 +1713,9 @@ class BrowserController(private val activity: Activity) {
      */
     private fun installDocumentStartScripts(view: WebView) {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
-        listOf(
-            DRAG_GUARD_JS,
+        listOfNotNull(
+            // 拖拽优先开启时不需要判定可拖拽元素，也省掉每次 touchstart 的桥接回调
+            if (app.settings.webDragPriority) null else DRAG_GUARD_JS,
             DETAILS_POLYFILL_JS,
             SPEECH_POLYFILL_JS,
             NIGHT_FRAME_JS

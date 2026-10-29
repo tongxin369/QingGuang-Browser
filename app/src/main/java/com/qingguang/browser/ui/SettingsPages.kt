@@ -700,6 +700,21 @@ private fun BrowsingSettings(controller: BrowserController) {
         app.settings.restoreTabs = value
     }
 
+    SettingsGroup("网页交互")
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    var dragPriority by remember { mutableStateOf(app.settings.webDragPriority) }
+    SettingsSwitchRow("网页拖拽优先", dragPriority) { value ->
+        dragPriority = value
+        app.settings.webDragPriority = value
+    }
+    Text(
+        "开启后长按图片或链接不再弹出应用菜单，手势完全交给网页，网页内拖动图标更流畅；" +
+            "需要「保存图片 / 复制链接」等菜单时可关闭此项。新打开的页面或刷新后生效。",
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 18.dp)
+    )
+
     SettingsGroup("手势")
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     SettingsSwitchRow("下拉刷新网页", pullRefresh) { value ->
