@@ -106,6 +106,13 @@ data class TabSummary(
     val locked: Boolean = false
 )
 
+/** 页面本地存储诊断项；firstSeenMs 为本次会话首次看到该键的时间 */
+data class StorageEntry(
+    val key: String,
+    val sizeChars: Int,
+    val firstSeenMs: Long
+)
+
 /** 等待用户确认的下载请求 */
 data class PendingDownload(
     val url: String,
@@ -190,24 +197,44 @@ class BrowserController(private val activity: Activity) {
     }
 
     private fun addDiagnostic(line: String) {
-        diagnostics.add(line)
+        val time = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+        diagnostics.add("[$time] $line")
         while (diagnostics.size > 120) diagnostics.removeAt(0)
     }
 
-    /** 读取当前页面的 localStorage 键与大小，回调 JSON：[[key,size],...] */
-    fun readLocalStorage(callback: (String) -> Unit) {
+    /** 记录每个站点存储键第一次被看到的时间（localStorage 本身不存写入时间） */
+    private val storageFirstSeen = mutableMapOf<String, Long>()
+
+    /**
+     * 读取当前页面的 localStorage 键与大小。
+     * 回调列表带「首次发现时间」，便于判断数据是新写入还是历史残留。
+     */
+    fun readLocalStorage(callback: (List<StorageEntry>) -> Unit) {
         val view = currentTab()?.webView
         if (view == null) {
-            callback("[]")
+            callback(emptyList())
             return
         }
+        val host = hostOf(currentUrl)
         view.evaluateJavascript(
             "(function(){try{var out=[];for(var i=0;i<localStorage.length;i++){" +
                 "var k=localStorage.key(i);var v=localStorage.getItem(k)||'';" +
                 "out.push([k,v.length]);}return JSON.stringify(out);}catch(e){return '[]';}})()"
         ) { raw ->
-            val text = runCatching { JSONTokener(raw).nextValue() as? String }.getOrNull()
-            callback(text ?: "[]")
+            val text = runCatching { JSONTokener(raw).nextValue() as? String }.getOrNull() ?: "[]"
+            val now = System.currentTimeMillis()
+            val entries = runCatching {
+                val array = org.json.JSONArray(text)
+                (0 until array.length()).mapNotNull { index ->
+                    val item = array.optJSONArray(index) ?: return@mapNotNull null
+                    val key = item.optString(0)
+                    if (key.isBlank()) return@mapNotNull null
+                    val mapKey = "$host|$key"
+                    val firstSeen = storageFirstSeen.getOrPut(mapKey) { now }
+                    StorageEntry(key, item.optInt(1), firstSeen)
+                }
+            }.getOrDefault(emptyList())
+            callback(entries)
         }
     }
 
@@ -375,14 +402,9 @@ class BrowserController(private val activity: Activity) {
     fun switchTab(id: String) {
         val index = tabs.indexOfFirst { it.id == id }
         if (index < 0) return
-        val tab = tabs[index]
-        // 标签里已经加载过页面时，点这个标签就回到该网页（返回首页不会丢掉网页）
-        val loadedUrl = tab.webView.url
-        val hasPage = !loadedUrl.isNullOrBlank() && !loadedUrl.startsWith("about:")
-        tab.showsHome = tab.showsHome && !hasPage
         activeIndex = index
-        // 每个标签各自记住是否停留在首页
-        showHome = tab.showsHome
+        // 每个标签各自记住是否停留在首页（返回首页后切回来仍是首页）
+        showHome = tabs[index].showsHome
         pageThemeColor = null
         renderContainer()
         refresh()
@@ -2144,10 +2166,13 @@ class BrowserController(private val activity: Activity) {
         }
         tabCount = tabs.size
         tabList = tabs.map {
+            // 已返回首页的标签在面板里显示为「新标签页」，不再挂着网页标题
+            val home = it.showsHome
             TabSummary(
                 id = it.id,
-                title = it.webView.title?.takeIf { t -> t.isNotBlank() } ?: "新标签页",
-                url = it.webView.url ?: "",
+                title = if (home) "新标签页"
+                else it.webView.title?.takeIf { t -> t.isNotBlank() } ?: "新标签页",
+                url = if (home) "" else it.webView.url ?: "",
                 isActive = it === tab,
                 locked = it.locked
             )

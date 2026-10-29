@@ -112,6 +112,7 @@ import com.qingguang.browser.util.BackupManager
 import com.qingguang.browser.util.SitePermission
 import com.qingguang.browser.util.SitePermissionStore
 import com.qingguang.browser.web.BrowserController
+import com.qingguang.browser.web.StorageEntry
 import org.burnoutcrew.reorderable.ReorderableItem
 import org.burnoutcrew.reorderable.detectReorderAfterLongPress
 import org.burnoutcrew.reorderable.reorderable
@@ -3091,22 +3092,13 @@ private fun PermissionSwitch(label: String, checked: Boolean, onChange: (Boolean
 @Composable
 private fun PageDiagnosticsPage(controller: BrowserController) {
     val context = LocalContext.current
-    var keys by remember { mutableStateOf<List<Pair<String, Int>>>(emptyList()) }
+    var keys by remember { mutableStateOf<List<StorageEntry>>(emptyList()) }
     var refreshKey by remember { mutableStateOf(0) }
     var pendingDelete by remember { mutableStateOf<String?>(null) }
     var confirmRepair by remember { mutableStateOf(false) }
 
     LaunchedEffect(refreshKey) {
-        controller.readLocalStorage { raw ->
-            keys = runCatching {
-                val array = org.json.JSONArray(raw)
-                (0 until array.length()).mapNotNull { index ->
-                    val item = array.optJSONArray(index) ?: return@mapNotNull null
-                    val key = item.optString(0)
-                    if (key.isBlank()) null else key to item.optInt(1)
-                }
-            }.getOrDefault(emptyList())
-        }
+        controller.readLocalStorage { entries -> keys = entries }
     }
 
     val logs = controller.diagnostics
@@ -3174,7 +3166,7 @@ private fun PageDiagnosticsPage(controller: BrowserController) {
             Column(Modifier.weight(1f)) {
                 Text("站点本地存储", fontSize = 13.sp, fontWeight = FontWeight.Medium)
                 Text(
-                    "网页的数据大多保存在这里。只删除出错的那个键，不会影响其他数据。",
+                    "网页的数据大多保存在这里；本地存储本身不记录写入时间，下面显示的是本次会话首次看到它的时间。",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -3190,7 +3182,8 @@ private fun PageDiagnosticsPage(controller: BrowserController) {
             )
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
-                items(keys, key = { it.first }) { (key, size) ->
+                items(keys, key = { it.key }) { entry ->
+                    val key = entry.key
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -3205,7 +3198,11 @@ private fun PageDiagnosticsPage(controller: BrowserController) {
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                "${BackupManager.formatSize(size.toLong())}（字符数）",
+                                "${BackupManager.formatSize(entry.sizeChars.toLong())}（字符数） · " +
+                                    "首次发现 " + SimpleDateFormat(
+                                        "MM-dd HH:mm:ss",
+                                        Locale.getDefault()
+                                    ).format(Date(entry.firstSeenMs)),
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

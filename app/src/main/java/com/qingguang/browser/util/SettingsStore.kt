@@ -142,9 +142,9 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_HOME_WALLPAPER, null)
         set(value) = prefs.edit().putString(KEY_HOME_WALLPAPER, value).apply()
 
-    /** 标签面板最大高度（dp）。默认 370，可调到接近网页区域高度；面板本身会按可用高度再收敛 */
+    /** 标签面板最大高度（dp）。默认铺满可用高度；面板本身会按可用高度再收敛 */
     var tabPanelHeight: Int
-        get() = prefs.getInt(KEY_TAB_PANEL_HEIGHT, 370).coerceIn(220, 720)
+        get() = prefs.getInt(KEY_TAB_PANEL_HEIGHT, 720).coerceIn(220, 720)
         set(value) = prefs.edit().putInt(KEY_TAB_PANEL_HEIGHT, value.coerceIn(220, 720)).apply()
 
     /** 夜间强制深色网页（注入 CSS 反色） */
