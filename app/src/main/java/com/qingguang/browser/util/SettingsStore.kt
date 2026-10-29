@@ -291,6 +291,72 @@ class SettingsStore(context: Context) {
         siteNightTuningJson = obj.toString()
     }
 
+    /** 重新启动后恢复上次打开的标签页 */
+    var restoreTabs: Boolean
+        get() = prefs.getBoolean(KEY_RESTORE_TABS, true)
+        set(value) = prefs.edit().putBoolean(KEY_RESTORE_TABS, value).apply()
+
+    /** 上次会话的标签页（JSON 数组，每项 {url,title}） */
+    var lastTabsJson: String
+        get() = prefs.getString(KEY_LAST_TABS, "").orEmpty()
+        set(value) = prefs.edit().putString(KEY_LAST_TABS, value).apply()
+
+    /** 标签面板是否按站点分组显示 */
+    var tabGroupBySite: Boolean
+        get() = prefs.getBoolean(KEY_TAB_GROUP_BY_SITE, false)
+        set(value) = prefs.edit().putBoolean(KEY_TAB_GROUP_BY_SITE, value).apply()
+
+    /** 操作记录自动清理 */
+    var auditAutoClean: Boolean
+        get() = prefs.getBoolean(KEY_AUDIT_AUTO_CLEAN, false)
+        set(value) = prefs.edit().putBoolean(KEY_AUDIT_AUTO_CLEAN, value).apply()
+
+    /** 操作记录保留天数 */
+    var auditKeepDays: Int
+        get() = prefs.getInt(KEY_AUDIT_KEEP_DAYS, 30).coerceIn(1, 365)
+        set(value) = prefs.edit().putInt(KEY_AUDIT_KEEP_DAYS, value.coerceIn(1, 365)).apply()
+
+    /** 站点备份保留份数（超出后自动删除最旧的） */
+    var siteBackupKeep: Int
+        get() = prefs.getInt(KEY_SITE_BACKUP_KEEP, 10).coerceIn(1, 50)
+        set(value) = prefs.edit().putInt(KEY_SITE_BACKUP_KEEP, value.coerceIn(1, 50)).apply()
+
+    /** 备份是否加密（站点与全局备份都适用） */
+    var backupEncrypt: Boolean
+        get() = prefs.getBoolean(KEY_BACKUP_ENCRYPT, false)
+        set(value) = prefs.edit().putBoolean(KEY_BACKUP_ENCRYPT, value).apply()
+
+    /** 备份口令；仅在本地保存 */
+    var backupPassword: String
+        get() = prefs.getString(KEY_BACKUP_PASSWORD, "").orEmpty()
+        set(value) = prefs.edit().putString(KEY_BACKUP_PASSWORD, value).apply()
+
+    /** 本地网页站内搜索历史（最近 10 条，新的在前） */
+    var siteSearchHistoryJson: String
+        get() = prefs.getString(KEY_SITE_SEARCH_HISTORY, "").orEmpty()
+        set(value) = prefs.edit().putString(KEY_SITE_SEARCH_HISTORY, value).apply()
+
+    fun recentSiteSearches(): List<String> {
+        val raw = siteSearchHistoryJson
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
+            val array = org.json.JSONArray(raw)
+            (0 until array.length()).mapNotNull { array.optString(it).takeIf { s -> s.isNotBlank() } }
+        }.getOrDefault(emptyList())
+    }
+
+    fun addSiteSearch(query: String) {
+        val key = query.trim()
+        if (key.isBlank()) return
+        val list = (listOf(key) + recentSiteSearches().filterNot { it == key }).take(10)
+        val array = org.json.JSONArray().apply { list.forEach { put(it) } }
+        siteSearchHistoryJson = array.toString()
+    }
+
+    fun clearSiteSearches() {
+        siteSearchHistoryJson = ""
+    }
+
     /** 该站点是否单独记忆过夜间亮度或色温 */
     fun hasSiteNightTuning(host: String): Boolean {
         val key = host.trim().lowercase()
@@ -343,6 +409,15 @@ class SettingsStore(context: Context) {
         private const val KEY_TAB_PANEL_HEIGHT = "tab_panel_height"
         private const val KEY_NIGHT_WARMTH = "night_warmth"
         private const val KEY_SITE_NIGHT_WARMTH = "site_night_warmth"
+        private const val KEY_RESTORE_TABS = "restore_tabs"
+        private const val KEY_LAST_TABS = "last_tabs"
+        private const val KEY_TAB_GROUP_BY_SITE = "tab_group_by_site"
+        private const val KEY_AUDIT_AUTO_CLEAN = "audit_auto_clean"
+        private const val KEY_AUDIT_KEEP_DAYS = "audit_keep_days"
+        private const val KEY_SITE_BACKUP_KEEP = "site_backup_keep"
+        private const val KEY_BACKUP_ENCRYPT = "backup_encrypt"
+        private const val KEY_BACKUP_PASSWORD = "backup_password"
+        private const val KEY_SITE_SEARCH_HISTORY = "site_search_history"
 
         const val DEFAULT_SEARCH_ENGINE = "https://www.bing.com/search?q=%s"
         const val DESKTOP_UA =

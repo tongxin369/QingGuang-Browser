@@ -314,11 +314,60 @@ class BrowserController(private val activity: Activity) {
     fun attachContainer(frame: FrameLayout) {
         container = frame
         // 首次进入至少保留一个空白标签，标签数字不会显示为 0
-        if (tabs.isEmpty()) newTabInternal()
+        if (tabs.isEmpty()) {
+            restoreSessionIfNeeded() ?: newTabInternal()
+        }
         renderContainer()
         refresh()
         schedulePrewarmWebView()
         startReclaimLoop()
+    }
+
+    /** 恢复上次会话（仅进程首次挂载时执行一次） */
+    private fun restoreSessionIfNeeded(): Unit? {
+        if (sessionRestored) return null
+        sessionRestored = true
+        if (!app.settings.restoreTabs) return null
+        val raw = app.settings.lastTabsJson
+        if (raw.isBlank()) return null
+        val entries = runCatching {
+            val array = org.json.JSONArray(raw)
+            (0 until array.length()).mapNotNull { index ->
+                val obj = array.optJSONObject(index) ?: return@mapNotNull null
+                val url = obj.optString("url")
+                if (url.isBlank()) null else url to obj.optString("title")
+            }
+        }.getOrDefault(emptyList())
+        if (entries.isEmpty()) return null
+        entries.take(20).forEach { (url, _) ->
+            val tab = BrowserTab(UUID.randomUUID().toString(), takePreparedWebView())
+            tabs.add(tab)
+            activeIndex = tabs.size - 1
+            tab.webView.loadUrl(url)
+            tab.showsHome = false
+        }
+        showHome = false
+        return Unit
+    }
+
+    private var sessionRestored = false
+
+    /** 把当前标签页地址写入设置，下次启动时可恢复 */
+    fun persistSession() {
+        if (app.settings.incognito) return
+        val array = org.json.JSONArray()
+        tabs.forEach { tab ->
+            val url = tab.webView.url
+            if (!url.isNullOrBlank()) {
+                array.put(
+                    org.json.JSONObject().apply {
+                        put("url", url)
+                        put("title", tab.webView.title ?: "")
+                    }
+                )
+            }
+        }
+        app.settings.lastTabsJson = array.toString()
     }
 
     fun newTab(): BrowserTab {
@@ -409,6 +458,40 @@ class BrowserController(private val activity: Activity) {
         renderContainer()
         refresh()
         if (!showHome) tabs[index].webView.let { updatePageTheme(it) }
+    }
+
+    /** 标签拖拽排序：把某个标签移动到目标位置，保持当前激活的标签不变 */
+    fun moveTab(id: String, toIndex: Int) {
+        val from = tabs.indexOfFirst { it.id == id }
+        if (from < 0) return
+        val target = toIndex.coerceIn(0, tabs.size - 1)
+        if (from == target) return
+        val activeTab = currentTab()
+        val tab = tabs.removeAt(from)
+        tabs.add(target, tab)
+        activeIndex = tabs.indexOfFirst { it.id == activeTab?.id }.takeIf { it >= 0 } ?: target
+        refresh()
+    }
+
+    /** 按给定顺序整体重排标签（用于拖拽结束后一次性落定） */
+    fun reorderTabs(orderedIds: List<String>) {
+        if (orderedIds.size != tabs.size) return
+        val activeTab = currentTab()
+        val sorted = orderedIds.mapNotNull { id -> tabs.firstOrNull { it.id == id } }
+        if (sorted.size != tabs.size) return
+        tabs.clear()
+        tabs.addAll(sorted)
+        activeIndex = tabs.indexOfFirst { it.id == activeTab?.id }.takeIf { it >= 0 } ?: 0
+        refresh()
+    }
+
+    /** 批量关闭标签（按站点分组关闭时使用） */
+    fun closeTabs(ids: List<String>) {
+        ids.forEach { id ->
+            val tab = tabs.firstOrNull { it.id == id } ?: return@forEach
+            if (tab.locked) return@forEach
+            closeTab(id)
+        }
     }
 
     fun goHome() {
@@ -1607,7 +1690,7 @@ class BrowserController(private val activity: Activity) {
                     )
                 )
             }
-            DownloadNotifier.notifyComplete(app, fileName)
+            DownloadNotifier.notifyComplete(app, fileName, uri)
             toast("下载完成：$fileName")
         }.onFailure { toast("下载失败：${it.message}") }
     }
@@ -1755,8 +1838,12 @@ class BrowserController(private val activity: Activity) {
         app.backups.backupSite(tab.webView, url, tab.webView.title ?: url, callback)
     }
 
-    /** 从 JSON 文件恢复当前站点的 Cookie、localStorage 与 IndexedDB */
-    fun restoreSiteData(json: String, callback: (Boolean, String) -> Unit) {
+    /** 从 JSON 文件恢复当前站点的 Cookie、localStorage 与 IndexedDB（支持加密备份） */
+    fun restoreSiteData(
+        json: String,
+        password: String? = null,
+        callback: (Boolean, String) -> Unit
+    ) {
         val tab = currentTab()
         if (tab == null) {
             callback(false, "当前没有打开的页面")
@@ -1767,8 +1854,13 @@ class BrowserController(private val activity: Activity) {
             callback(false, "请先打开要恢复数据的网页")
             return
         }
+        val text = app.backups.decodeMaybeEncrypted(json, password)
+        if (text == null) {
+            callback(false, "该备份已加密，请输入正确口令")
+            return
+        }
         audit("站点数据", "恢复", hostOf(url), "从 JSON 文件恢复")
-        app.backups.restoreFromText(tab.webView, json, callback)
+        app.backups.restoreFromText(tab.webView, text, callback)
     }
 
     /** 导出当前站点的 localStorage 与 IndexedDB 为 JSON，保存到下载目录 */
@@ -1787,14 +1879,18 @@ class BrowserController(private val activity: Activity) {
         tab.webView.evaluateJavascript(SITE_DATA_EXPORT_JS, null)
     }
 
-    /** 从备份恢复当前页面 */
-    fun restoreBackup(info: BackupInfo, callback: (Boolean, String) -> Unit) {
+    /** 从备份恢复当前页面（加密备份需传入口令） */
+    fun restoreBackup(
+        info: BackupInfo,
+        password: String? = null,
+        callback: (Boolean, String) -> Unit
+    ) {
         val tab = currentTab()
         if (tab == null) {
             callback(false, "请先打开需要恢复的网页")
             return
         }
-        app.backups.restore(tab.webView, info, callback)
+        app.backups.restore(tab.webView, info, password, callback)
     }
 
     /** 只清缓存，不影响 Cookie 与网页数据 */

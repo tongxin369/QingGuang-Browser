@@ -14,6 +14,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -31,6 +33,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import org.burnoutcrew.reorderable.ReorderableItem
+import org.burnoutcrew.reorderable.detectReorderAfterLongPress
+import org.burnoutcrew.reorderable.reorderable
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -100,6 +106,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -109,6 +116,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -121,6 +129,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.qingguang.browser.App
 import com.qingguang.browser.ui.theme.ThemeController
+import com.qingguang.browser.util.hostOf
 import com.qingguang.browser.web.BrowserController
 import com.qingguang.browser.web.TabSummary
 import kotlinx.coroutines.launch
@@ -158,6 +167,27 @@ private fun rememberBarColors(controller: BrowserController): BarColors {
 fun BrowserScreen(controller: BrowserController) {
     val focusManager = LocalFocusManager.current
     val app = LocalContext.current.applicationContext as App
+
+    // 上次异常退出时把崩溃栈提示出来，方便用户反馈问题
+    val crashReport = app.crashReport
+    if (crashReport != null) {
+        AlertDialog(
+            onDismissRequest = { app.dismissCrashReport() },
+            title = { Text("上次异常退出") },
+            text = {
+                Text(
+                    crashReport,
+                    fontSize = 11.sp,
+                    modifier = Modifier
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState())
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { app.dismissCrashReport() }) { Text("知道了") }
+            }
+        )
+    }
 
     var address by remember { mutableStateOf("") }
     var overlay by remember { mutableStateOf<OverlayPage?>(null) }
@@ -681,6 +711,35 @@ private fun TabPanel(
 ) {
     var query by remember { mutableStateOf("") }
     val tabSettings = (LocalContext.current.applicationContext as App).settings
+    var groupToClose by remember { mutableStateOf<List<TabSummary>?>(null) }
+    // 拖拽排序：复用书签页那套 reorderable 模组，长按后拖动
+    val sortItems = remember { mutableStateListOf<TabSummary>() }
+    val reorderState = org.burnoutcrew.reorderable.rememberReorderableLazyListState(
+        onMove = { from, to ->
+            val fromId = from.key as? String
+            val toId = to.key as? String
+            if (fromId != null && toId != null) {
+                val fromIndex = sortItems.indexOfFirst { it.id == fromId }
+                val toIndex = sortItems.indexOfFirst { it.id == toId }
+                if (fromIndex >= 0 && toIndex >= 0) {
+                    sortItems.add(toIndex, sortItems.removeAt(fromIndex))
+                }
+            }
+        }
+    )
+    val dragging = reorderState.draggingItemIndex != null
+    LaunchedEffect(controller.tabList, dragging) {
+        if (!dragging && sortItems.map { it.id } != controller.tabList.map { it.id }) {
+            sortItems.clear()
+            sortItems.addAll(controller.tabList)
+        }
+    }
+    LaunchedEffect(dragging) {
+        if (!dragging && sortItems.isNotEmpty()) {
+            controller.reorderTabs(sortItems.map { it.id })
+        }
+    }
+    val grouped = tabSettings.tabGroupBySite && query.isBlank() && !dragging
     val filtered = remember(query, controller.tabList) {
         val keyword = query.trim()
         if (keyword.isEmpty()) controller.tabList
@@ -748,17 +807,86 @@ private fun TabPanel(
                             .padding(horizontal = 16.dp, vertical = 2.dp)
                     )
                 }
-                LazyColumn(Modifier.weight(1f, fill = false)) {
-                    items(filtered, key = { it.id }) { tab ->
-                        TabRow(
-                            tab = tab,
-                            onClick = {
-                                controller.switchTab(tab.id)
-                                onDismiss()
-                            },
-                            onClose = { controller.closeTab(tab.id) },
-                            onToggleLock = { controller.toggleTabLock(tab.id) }
-                        )
+                val dragEnabled = query.isBlank() && !grouped
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .then(
+                            if (dragEnabled) Modifier.reorderable(reorderState)
+                            else Modifier
+                        ),
+                    state = if (dragEnabled) reorderState.listState
+                    else androidx.compose.foundation.lazy.rememberLazyListState()
+                ) {
+                    if (grouped) {
+                        val groups = sortItems.groupBy { tab ->
+                            if (tab.url.isBlank()) "新标签页" else hostOf(tab.url)
+                        }
+                        groups.forEach { (host, groupTabs) ->
+                            item(key = "group-$host") {
+                                TabGroupHeader(
+                                    label = host,
+                                    count = groupTabs.size,
+                                    colors = colors,
+                                    onCloseGroup = { groupToClose = groupTabs }
+                                )
+                            }
+                            items(groupTabs, key = { it.id }) { tab ->
+                                TabRow(
+                                    tab = tab,
+                                    onClick = {
+                                        controller.switchTab(tab.id)
+                                        onDismiss()
+                                    },
+                                    onClose = { controller.closeTab(tab.id) },
+                                    onToggleLock = { controller.toggleTabLock(tab.id) }
+                                )
+                            }
+                        }
+                    } else {
+                        itemsIndexed(filtered, key = { _, it -> it.id }) { _, tab ->
+                            if (dragEnabled) {
+                                org.burnoutcrew.reorderable.ReorderableItem(
+                                    reorderState,
+                                    key = tab.id
+                                ) { isDragging ->
+                                    Box(
+                                        Modifier
+                                            .graphicsLayer {
+                                                if (isDragging) {
+                                                    scaleX = 1.02f
+                                                    scaleY = 1.02f
+                                                }
+                                            }
+                                            .background(colors.container)
+                                    ) {
+                                        Box(
+                                            Modifier.detectReorderAfterLongPress(reorderState)
+                                        ) {
+                                            TabRow(
+                                                tab = tab,
+                                                onClick = {
+                                                    controller.switchTab(tab.id)
+                                                    onDismiss()
+                                                },
+                                                onClose = { controller.closeTab(tab.id) },
+                                                onToggleLock = { controller.toggleTabLock(tab.id) }
+                                            )
+                                        }
+                                    }
+                                }
+                            } else {
+                                TabRow(
+                                    tab = tab,
+                                    onClick = {
+                                        controller.switchTab(tab.id)
+                                        onDismiss()
+                                    },
+                                    onClose = { controller.closeTab(tab.id) },
+                                    onToggleLock = { controller.toggleTabLock(tab.id) }
+                                )
+                            }
+                        }
                     }
                     if (filtered.isEmpty()) {
                         item {
@@ -811,6 +939,59 @@ private fun TabPanel(
                         modifier = Modifier.size(20.dp)
                     )
                 }
+            }
+        }
+    }
+    groupToClose?.let { tabs ->
+        AlertDialog(
+            onDismissRequest = { groupToClose = null },
+            title = { Text("关闭整组标签页") },
+            text = {
+                Text("将关闭该站点下的 ${tabs.size} 个标签页，其中已锁定的标签会保留。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    controller.closeTabs(tabs.map { it.id })
+                    groupToClose = null
+                }) { Text("关闭") }
+            },
+            dismissButton = {
+                TextButton(onClick = { groupToClose = null }) { Text("取消") }
+            }
+        )
+    }
+}
+
+/** 按站点分组时的组标题：显示站点与标签数量，并提供整组关闭入口 */
+@Composable
+private fun TabGroupHeader(
+    label: String,
+    count: Int,
+    colors: BarColors,
+    onCloseGroup: () -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 20.dp, end = 8.dp, top = 10.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            label,
+            fontSize = 12.sp,
+            color = colors.content.copy(alpha = 0.65f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            "$count 个",
+            fontSize = 11.sp,
+            color = colors.content.copy(alpha = 0.5f)
+        )
+        if (count > 1) {
+            TextButton(onClick = onCloseGroup) {
+                Text("整组关闭", fontSize = 12.sp, color = colors.content.copy(alpha = 0.8f))
             }
         }
     }

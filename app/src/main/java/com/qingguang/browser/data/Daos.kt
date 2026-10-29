@@ -210,6 +210,9 @@ interface AuditLogDao {
     @Query("DELETE FROM audit_logs WHERE id NOT IN (SELECT id FROM audit_logs ORDER BY createdAt DESC LIMIT 500)")
     suspend fun prune()
 
+    @Query("DELETE FROM audit_logs WHERE createdAt < :cutoff")
+    suspend fun deleteOlderThan(cutoff: Long)
+
     @Query("DELETE FROM audit_logs")
     suspend fun clearAll()
 }

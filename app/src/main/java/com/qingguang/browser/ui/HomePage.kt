@@ -100,9 +100,12 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -112,6 +115,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.core.content.FileProvider
 import com.qingguang.browser.App
 import com.qingguang.browser.R
 import com.qingguang.browser.data.Bookmark
@@ -871,8 +875,58 @@ private fun LocalPagesPage(
     var fileSearchQuery by remember { mutableStateOf("") }
     var fileSearchQuerySite by remember { mutableStateOf<String?>(null) }
     var fileSearchHits by remember { mutableStateOf<List<Pair<String, String>>?>(null) }
+    var fileSearchHitsQuery by remember { mutableStateOf("") }
     var fileSearching by remember { mutableStateOf(false) }
     var fileDeleteTarget by remember { mutableStateOf<Triple<String, String, String>?>(null) }
+    // 站内搜索历史（最近 10 条）
+    var searchHistory by remember { mutableStateOf(app.settings.recentSiteSearches()) }
+    // 站点导出与空间管理
+    var exportTarget by remember { mutableStateOf<LocalPage?>(null) }
+    var spaceDialog by remember { mutableStateOf(false) }
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        val page = exportTarget
+        exportTarget = null
+        if (uri != null && page != null) {
+            scope.launch {
+                val count = runCatching {
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.use { output ->
+                            app.localSites.exportZip(page.siteId, output)
+                        } ?: 0
+                    }
+                }.getOrDefault(0)
+                if (count > 0) toast(context, "已导出 ${page.displayName}（$count 个文件）")
+                else toast(context, "导出失败：站点为空或无法写入")
+            }
+        }
+    }
+
+    fun shareSite(page: LocalPage) {
+        scope.launch {
+            val zip = withContext(Dispatchers.IO) {
+                app.localSites.zipToCache(page.siteId, page.displayName)
+            }
+            if (zip == null) {
+                toast(context, "打包失败：站点为空或无法写入")
+                return@launch
+            }
+            runCatching {
+                val uri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    zip
+                )
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "application/zip"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(intent, "分享站点压缩包"))
+            }.onFailure { toast(context, "分享失败：${it.message}") }
+        }
+    }
 
     fun runSiteSearch(page: LocalPage, keyword: String) {
         val query = keyword.trim()
@@ -881,6 +935,9 @@ private fun LocalPagesPage(
             return
         }
         fileSearching = true
+        app.settings.addSiteSearch(query)
+        searchHistory = app.settings.recentSiteSearches()
+        fileSearchHitsQuery = query
         scope.launch {
             val hits = withContext(Dispatchers.IO) { app.localSites.searchHtml(page.siteId, query) }
             fileSearchHits = hits
@@ -1222,6 +1279,22 @@ private fun LocalPagesPage(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 4.dp)
             )
+            if (localPages.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = {
+                        scope.launch {
+                            val sizes = withContext(Dispatchers.IO) {
+                                localPages.associate { it.siteId to app.localSites.siteSizeBytes(it.siteId) }
+                            }
+                            siteSizes = sizes
+                            spaceDialog = true
+                        }
+                    }) { Text("空间管理", fontSize = 12.sp) }
+                }
+            }
             if (localPages.size > 3) {
                 OutlinedTextField(
                     value = siteQuery,
@@ -1334,6 +1407,42 @@ private fun LocalPagesPage(
                                     !fileSearching,
                                 onClick = { runSiteSearch(page, fileSearchQuery) }
                             ) { Text(if (fileSearching) "搜索中…" else "搜索", fontSize = 12.sp) }
+                        }
+                        val currentQuery = if (fileSearchQuerySite == page.siteId) fileSearchQuery else ""
+                        val history = searchHistory.filter { it != currentQuery }
+                        if (history.isNotEmpty() && currentQuery.isBlank()) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(start = 20.dp, end = 12.dp, bottom = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    "最近搜索",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                history.take(6).forEach { keyword ->
+                                    Text(
+                                        keyword,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(
+                                                MaterialTheme.colorScheme.secondaryContainer
+                                                    .copy(alpha = 0.5f)
+                                            )
+                                            .clickable {
+                                                fileSearchQuerySite = page.siteId
+                                                fileSearchQuery = keyword
+                                                runSiteSearch(page, keyword)
+                                            }
+                                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
+                                }
+                            }
                         }
                         val files = siteFiles[page.siteId]
                         if (files != null) {
@@ -1537,6 +1646,16 @@ private fun LocalPagesPage(
                     }) { Text("从手机原文件更新") }
                     TextButton(onClick = {
                         actionTarget = null
+                        exportTarget = page
+                        val name = page.displayName.substringBeforeLast('.').ifBlank { "站点" }
+                        exportLauncher.launch("$name.zip")
+                    }) { Text("导出为 zip 文件") }
+                    TextButton(onClick = {
+                        actionTarget = null
+                        shareSite(page)
+                    }) { Text("打包并分享") }
+                    TextButton(onClick = {
+                        actionTarget = null
                         deleteTarget = page
                     }) {
                         Text("删除站点", color = MaterialTheme.colorScheme.error)
@@ -1659,7 +1778,7 @@ private fun LocalPagesPage(
                                     .padding(vertical = 6.dp)
                             ) {
                                 Text(
-                                    path,
+                                    highlightText(path, fileSearchHitsQuery),
                                     fontSize = 12.sp,
                                     color = MaterialTheme.colorScheme.primary,
                                     maxLines = 1,
@@ -1667,7 +1786,7 @@ private fun LocalPagesPage(
                                 )
                                 if (snippet.isNotBlank()) {
                                     Text(
-                                        "…$snippet…",
+                                        highlightText("…$snippet…", fileSearchHitsQuery),
                                         fontSize = 11.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 2,
@@ -1684,6 +1803,85 @@ private fun LocalPagesPage(
                 TextButton(onClick = { fileSearchHits = null }) { Text("关闭") }
             }
         )
+    }
+
+    // 站点占用空间管理
+    if (spaceDialog) {
+        val sorted = localPages.sortedByDescending { siteSizes[it.siteId] ?: 0L }
+        val total = sorted.sumOf { siteSizes[it.siteId] ?: 0L }
+        AlertDialog(
+            onDismissRequest = { spaceDialog = false },
+            title = { Text("站点占用空间") },
+            text = {
+                Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                    Text(
+                        "应用内副本合计 ${formatSize(total)}；删除只影响应用内副本，手机原文件不受影响。",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    sorted.forEach { page ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    page.displayName,
+                                    fontSize = 13.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    formatSize(siteSizes[page.siteId] ?: 0L),
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            TextButton(onClick = {
+                                spaceDialog = false
+                                deleteTarget = page
+                            }) {
+                                Text("清理", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { spaceDialog = false }) { Text("关闭") }
+            }
+        )
+    }
+}
+
+/** 把搜索命中的关键词高亮出来 */
+private fun highlightText(text: String, keyword: String): androidx.compose.ui.text.AnnotatedString {
+    val key = keyword.trim()
+    if (key.isEmpty()) return androidx.compose.ui.text.AnnotatedString(text)
+    return buildAnnotatedString {
+        var start = 0
+        val lower = text.lowercase()
+        val target = key.lowercase()
+        while (true) {
+            val index = lower.indexOf(target, start)
+            if (index < 0) {
+                append(text.substring(start))
+                break
+            }
+            append(text.substring(start, index))
+            withStyle(
+                SpanStyle(
+                    fontWeight = FontWeight.Bold,
+                    background = Color(0xFFFFE08A)
+                )
+            ) {
+                append(text.substring(index, index + key.length))
+            }
+            start = index + key.length
+        }
     }
 }
 

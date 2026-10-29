@@ -45,9 +45,18 @@ class GlobalBackupManager(
         return result
     }
 
-    suspend fun restore(info: BackupInfo): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun restore(info: BackupInfo, password: String? = null): Result<String> =
+        withContext(Dispatchers.IO) {
         runCatching {
-            val root = runCatching { JSONObject(backups.readText(info)) }
+            val raw = runCatching { backups.readText(info) }
+                .getOrElse { error("备份文件无法读取") }
+            val text = if (BackupCrypto.isEncrypted(raw)) {
+                val pw = password?.takeIf { it.isNotBlank() } ?: error("该备份已加密，需要输入备份口令")
+                BackupCrypto.decrypt(raw, pw) ?: error("口令不正确或备份文件已损坏")
+            } else {
+                raw
+            }
+            val root = runCatching { JSONObject(text) }
                 .getOrElse { error("备份文件无法读取") }
             if (root.optString("type") != TYPE) error("这不是全局数据备份")
 

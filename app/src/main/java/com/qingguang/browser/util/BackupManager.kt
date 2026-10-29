@@ -108,20 +108,53 @@ class BackupManager(
         }
     }
 
-    /** 写入一个 JSON 备份文件（全局数据备份复用同一目录） */
+    /** 写入一个 JSON 备份文件（全局数据备份复用同一目录）；开启加密时写入密文 */
     fun writeText(fileName: String, text: String): Boolean = runCatching {
+        val payload = if (settings.backupEncrypt && settings.backupPassword.isNotBlank()) {
+            BackupCrypto.encrypt(text, settings.backupPassword)
+        } else {
+            text
+        }
         val root = customRoot()
         if (root != null) {
             val target = root.findFile(fileName)
                 ?: root.createFile("application/json", fileName)
                 ?: error("无法在所选目录创建文件")
             context.contentResolver.openOutputStream(target.uri)?.use {
-                it.write(text.toByteArray(Charsets.UTF_8))
+                it.write(payload.toByteArray(Charsets.UTF_8))
             } ?: error("无法写入所选目录")
         } else {
-            File(defaultDir, fileName).writeText(text, Charsets.UTF_8)
+            File(defaultDir, fileName).writeText(payload, Charsets.UTF_8)
         }
     }.isSuccess
+
+    /** 备份是否加密（只读取文件头，避免大文件完整读取） */
+    fun isEncrypted(info: BackupInfo): Boolean = runCatching {
+        val head = if (info.uri != null) {
+            context.contentResolver.openInputStream(info.uri)?.use { input ->
+                val buffer = ByteArray(8)
+                val read = input.read(buffer)
+                if (read > 0) String(buffer, 0, read, Charsets.UTF_8) else ""
+            }.orEmpty()
+        } else {
+            info.file?.inputStream()?.use { input ->
+                val buffer = ByteArray(8)
+                val read = input.read(buffer)
+                if (read > 0) String(buffer, 0, read, Charsets.UTF_8) else ""
+            }.orEmpty()
+        }
+        head.startsWith(BackupCrypto.MAGIC)
+    }.getOrDefault(false)
+
+    /** 删除超出保留份数的旧站点备份，返回删除数量 */
+    fun pruneSiteBackups(keep: Int = settings.siteBackupKeep): Int =
+        kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+            var removed = 0
+            listBackups(global = false).drop(keep.coerceAtLeast(1)).forEach {
+                if (delete(it)) removed++
+            }
+            removed
+        }
 
     private fun isGlobalName(name: String): Boolean = name.startsWith(GLOBAL_PREFIX)
 
@@ -176,6 +209,7 @@ class BackupManager(
                 }
                 if (writeText(fileName, payload.toString())) {
                     pruneOld(safeHost, fileName)
+                    pruneSiteBackups()
                     onResult(
                         true,
                         "已备份 Cookie、localStorage 与 ${indexedDb.length()} 个 IndexedDB 库到 ${locationLabel()}/$fileName"
@@ -218,14 +252,32 @@ class BackupManager(
     }
 
     /** 从备份恢复 Cookie、localStorage 与 IndexedDB。回调在主线程。 */
-    fun restore(webView: WebView, info: BackupInfo, onResult: (Boolean, String) -> Unit) {
-        val text = runCatching { readText(info) }.getOrNull()
-        if (text == null) {
+    fun restore(
+        webView: WebView,
+        info: BackupInfo,
+        password: String? = null,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        val raw = runCatching { readText(info) }.getOrNull()
+        if (raw == null) {
             onResult(false, "备份文件已损坏或无法读取")
             return
         }
+        val text = if (BackupCrypto.isEncrypted(raw)) {
+            val pw = password?.takeIf { it.isNotBlank() }
+                ?: return onResult(false, "该备份已加密，需要输入备份口令")
+            BackupCrypto.decrypt(raw, pw)
+                ?: return onResult(false, "口令不正确或备份文件已损坏")
+        } else {
+            raw
+        }
         restoreFromText(webView, text, onResult)
     }
+
+    /** 解密任意备份文本；未加密时原样返回，口令错误返回 null */
+    fun decodeMaybeEncrypted(text: String, password: String?): String? =
+        if (!BackupCrypto.isEncrypted(text)) text
+        else password?.takeIf { it.isNotBlank() }?.let { BackupCrypto.decrypt(text, it) }
 
     /** 从 JSON 文本恢复（同时兼容「站点数据导出」生成的 JSON）。回调在主线程。 */
     fun restoreFromText(webView: WebView, text: String, onResult: (Boolean, String) -> Unit) {

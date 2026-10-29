@@ -168,6 +168,7 @@ class MainActivity : ComponentActivity() {
                 "QGStart",
                 "first frame +${android.os.SystemClock.uptimeMillis() - App.createdAtUptime}ms"
             )
+            (applicationContext as App).markFirstFrame()
         }
         handleIntent(intent)
     }
@@ -244,8 +245,16 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         controller.autoBackupCurrent()
+        controller.persistSession()
+        val app = applicationContext as App
         lifecycleScope.launch {
-            (applicationContext as App).globalBackups.autoBackupIfNeeded()
+            app.globalBackups.autoBackupIfNeeded()
+            // 操作记录定期清理：按用户设定的保留天数删除过期记录
+            if (app.settings.auditAutoClean) {
+                val cutoff = System.currentTimeMillis() -
+                    app.settings.auditKeepDays * 24L * 60 * 60 * 1000
+                runCatching { app.database.auditLogDao().deleteOlderThan(cutoff) }
+            }
         }
     }
 

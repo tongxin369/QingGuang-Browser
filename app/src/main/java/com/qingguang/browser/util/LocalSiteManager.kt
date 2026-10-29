@@ -382,6 +382,37 @@ class LocalSiteManager(private val context: Context) {
         siteDir(siteId).deleteRecursively()
     }
 
+    /** 把整个站点打包成 zip（相对路径完整保留），返回写入的文件数 */
+    suspend fun exportZip(siteId: String, output: java.io.OutputStream): Int =
+        withContext(Dispatchers.IO) {
+            val dir = siteDir(siteId)
+            if (!dir.isDirectory) return@withContext 0
+            var count = 0
+            java.util.zip.ZipOutputStream(output.buffered()).use { zip ->
+                dir.walkTopDown().filter { it.isFile }.forEach { file ->
+                    val relative = file.relativeTo(dir).invariantSeparatorsPath
+                    zip.putNextEntry(java.util.zip.ZipEntry(relative))
+                    file.inputStream().use { input -> input.copyTo(zip) }
+                    zip.closeEntry()
+                    count++
+                }
+            }
+            count
+        }
+
+    /** 打包到应用缓存目录，供「分享」使用 */
+    suspend fun zipToCache(siteId: String, displayName: String): File? =
+        withContext(Dispatchers.IO) {
+            val dir = File(context.cacheDir, "site_export").apply { mkdirs() }
+            dir.listFiles()?.forEach { it.delete() }
+            val safe = sanitizeFileName(displayName).ifBlank { siteId }
+            val target = File(dir, "$safe.zip")
+            val ok = runCatching {
+                target.outputStream().use { output -> exportZip(siteId, output) }
+            }.getOrDefault(0) > 0
+            target.takeIf { ok }
+        }
+
     /** 删除站点副本里的单个网页文件（相对路径）；返回是否删除成功 */
     suspend fun deleteHtmlFile(siteId: String, relativePath: String): Boolean =
         withContext(Dispatchers.IO) {

@@ -63,6 +63,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -1520,6 +1521,20 @@ private fun DownloadsPage(controller: BrowserController) {
     var selectionMode by remember { mutableStateOf(false) }
     val selectedIds = remember { androidx.compose.runtime.mutableStateListOf<Long>() }
     var typeFilter by remember { mutableStateOf("全部") }
+    // 自建断点续传任务（暂停保留分片，继续走 Range）
+    var resumeTasks by remember {
+        mutableStateOf(com.qingguang.browser.util.ResumableDownloads.tasks(context))
+    }
+    var showResumeDialog by remember { mutableStateOf(false) }
+    var resumeUrl by remember { mutableStateOf("") }
+    var resumeName by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            resumeTasks = com.qingguang.browser.util.ResumableDownloads.tasks(context)
+            delay(1200)
+        }
+    }
 
     fun categoryOf(record: com.qingguang.browser.data.DownloadRecord): String {
         val ext = record.fileName.substringAfterLast('.', "").lowercase()
@@ -1622,6 +1637,11 @@ private fun DownloadsPage(controller: BrowserController) {
                 selectionMode = !selectionMode
                 if (!selectionMode) selectedIds.clear()
             }) { Text(if (selectionMode) "完成" else "选择", fontSize = 12.sp) }
+            TextButton(onClick = {
+                resumeUrl = ""
+                resumeName = ""
+                showResumeDialog = true
+            }) { Text("续传下载", fontSize = 12.sp) }
         }
         if (selectionMode) {
             Row(
@@ -1643,6 +1663,24 @@ private fun DownloadsPage(controller: BrowserController) {
                         selectedIds.addAll(visible.map { it.id })
                     }
                 }) { Text(if (selectedIds.size == visible.size) "取消全选" else "全选", fontSize = 12.sp) }
+                TextButton(
+                    enabled = selectedIds.any { id ->
+                        downloads.any { it.id == id && it.status == "下载失败" }
+                    },
+                    onClick = {
+                        var retried = 0
+                        selectedIds.forEach { id ->
+                            val record = downloads.firstOrNull { it.id == id } ?: return@forEach
+                            if (record.status == "下载失败") {
+                                controller.retryDownload(record.url, record.fileName, record.mimeType)
+                                retried++
+                            }
+                        }
+                        selectedIds.clear()
+                        selectionMode = false
+                        Toast.makeText(context, "已重新下载 $retried 项", Toast.LENGTH_SHORT).show()
+                    }
+                ) { Text("重试失败项", fontSize = 12.sp) }
                 TextButton(
                     enabled = selectedIds.isNotEmpty(),
                     onClick = {
@@ -1687,10 +1725,122 @@ private fun DownloadsPage(controller: BrowserController) {
                 }
             }
         }
-        if (visible.isEmpty()) {
+        if (visible.isEmpty() && resumeTasks.isEmpty()) {
             EmptyHint(if (downloads.isEmpty()) "还没有下载记录。" else "当前分类下没有下载记录。")
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
+                if (resumeTasks.isNotEmpty()) {
+                    item(key = "resume-title") {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(start = 20.dp, end = 12.dp, top = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "断点续传任务",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (resumeTasks.any { it.isFinished }) {
+                                TextButton(onClick = {
+                                    com.qingguang.browser.util.ResumableDownloads
+                                        .clearFinished(context)
+                                    resumeTasks = com.qingguang.browser.util.ResumableDownloads
+                                        .tasks(context)
+                                }) { Text("清除已完成", fontSize = 11.sp) }
+                            }
+                        }
+                    }
+                    items(resumeTasks, key = { "rt-${it.id}" }) { task ->
+                        Column(Modifier.fillMaxWidth()) {
+                            ListItem(
+                                leadingContent = {
+                                    Icon(
+                                        Icons.Filled.Refresh,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                },
+                                headlineContent = {
+                                    Text(
+                                        task.fileName,
+                                        fontSize = 14.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                },
+                                supportingContent = {
+                                    Column {
+                                        Text(
+                                            buildString {
+                                                append(task.status)
+                                                if (task.totalBytes > 0) {
+                                                    append(" · ")
+                                                    append(BackupManager.formatSize(task.bytes))
+                                                    append(" / ")
+                                                    append(BackupManager.formatSize(task.totalBytes))
+                                                }
+                                                if (task.message.isNotBlank()) {
+                                                    append(" · ")
+                                                    append(task.message)
+                                                }
+                                            },
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        if (task.isActive) {
+                                            LinearProgressIndicator(
+                                                progress = { task.progress },
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(top = 4.dp)
+                                                    .height(3.dp)
+                                            )
+                                        }
+                                    }
+                                },
+                                trailingContent = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (task.isActive) {
+                                            IconButton(onClick = {
+                                                com.qingguang.browser.util.ResumableDownloads
+                                                    .pause(context, task.id)
+                                                resumeTasks = com.qingguang.browser.util.ResumableDownloads
+                                                    .tasks(context)
+                                            }) {
+                                                Icon(Icons.Filled.Pause, contentDescription = "暂停")
+                                            }
+                                        }
+                                        if (task.canResume) {
+                                            IconButton(onClick = {
+                                                com.qingguang.browser.util.ResumableDownloads.resume(
+                                                    context,
+                                                    task.id,
+                                                    android.webkit.WebSettings.getDefaultUserAgent(context)
+                                                )
+                                                resumeTasks = com.qingguang.browser.util.ResumableDownloads
+                                                    .tasks(context)
+                                            }) {
+                                                Icon(Icons.Filled.PlayArrow, contentDescription = "继续")
+                                            }
+                                        }
+                                        IconButton(onClick = {
+                                            com.qingguang.browser.util.ResumableDownloads
+                                                .remove(context, task.id)
+                                            resumeTasks = com.qingguang.browser.util.ResumableDownloads
+                                                .tasks(context)
+                                        }) {
+                                            Icon(Icons.Filled.Delete, contentDescription = "删除任务")
+                                        }
+                                    }
+                                }
+                            )
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        }
+                    }
+                }
                 items(visible, key = { it.id }) { record ->
                     val progress = progressMap[record.id]
                     val running = progress?.status == DownloadManager.STATUS_RUNNING
@@ -1904,6 +2054,64 @@ private fun DownloadsPage(controller: BrowserController) {
         )
     }
 
+    if (showResumeDialog) {
+        AlertDialog(
+            onDismissRequest = { showResumeDialog = false },
+            title = { Text("新建断点续传下载") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = resumeUrl,
+                        onValueChange = { resumeUrl = it },
+                        singleLine = true,
+                        label = { Text("下载链接", fontSize = 12.sp) },
+                        placeholder = { Text("https://…", fontSize = 12.sp) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = resumeName,
+                        onValueChange = { resumeName = it },
+                        singleLine = true,
+                        label = { Text("文件名（可留空）", fontSize = 12.sp) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "由应用自建引擎下载，支持暂停后保留分片、继续时用 Range 续传。" +
+                            "若站点不支持断点续传，会从头重新下载。",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = resumeUrl.trim().startsWith("http"),
+                    onClick = {
+                        val task = com.qingguang.browser.util.ResumableDownloads.start(
+                            context,
+                            resumeUrl,
+                            resumeName,
+                            "",
+                            android.webkit.WebSettings.getDefaultUserAgent(context)
+                        )
+                        if (task == null) {
+                            Toast.makeText(context, "链接无效", Toast.LENGTH_SHORT).show()
+                        } else {
+                            resumeTasks = com.qingguang.browser.util.ResumableDownloads
+                                .tasks(context)
+                            showResumeDialog = false
+                        }
+                    }
+                ) { Text("开始") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResumeDialog = false }) { Text("取消") }
+            }
+        )
+    }
+
     if (confirmClearFinished) {
         AlertDialog(
             onDismissRequest = { confirmClearFinished = false },
@@ -2104,6 +2312,10 @@ private fun SiteBackupSection(controller: BrowserController) {
     var backups by remember { mutableStateOf<List<BackupInfo>>(emptyList()) }
     var pendingDelete by remember { mutableStateOf<BackupInfo?>(null) }
     var pendingRestore by remember { mutableStateOf<BackupInfo?>(null) }
+    // 加密备份恢复：需要口令
+    var passwordTarget by remember { mutableStateOf<BackupInfo?>(null) }
+    var passwordInput by remember { mutableStateOf("") }
+    var pendingImportText by remember { mutableStateOf<String?>(null) }
     var showScopeInfo by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var autoBackup by remember { mutableStateOf(app.settings.autoBackup) }
@@ -2140,6 +2352,10 @@ private fun SiteBackupSection(controller: BrowserController) {
                 }.getOrNull()
                 if (text.isNullOrBlank()) {
                     message = "读取 JSON 文件失败"
+                } else if (com.qingguang.browser.util.BackupCrypto.isEncrypted(text)) {
+                    // 加密备份：先询问口令
+                    pendingImportText = text
+                    passwordInput = ""
                 } else {
                     controller.restoreSiteData(text) { _, msg -> message = msg }
                 }
@@ -2329,12 +2545,74 @@ private fun SiteBackupSection(controller: BrowserController) {
             },
             confirmButton = {
                 TextButton(onClick = {
+                    val info = pendingRestore
                     pendingRestore = null
-                    controller.restoreBackup(info) { _, msg -> message = msg }
+                    if (info == null) return@TextButton
+                    if (app.backups.isEncrypted(info)) {
+                        passwordInput = ""
+                        passwordTarget = info
+                    } else {
+                        controller.restoreBackup(info) { _, msg -> message = msg }
+                    }
                 }) { Text("恢复") }
             },
             dismissButton = {
                 TextButton(onClick = { pendingRestore = null }) { Text("取消") }
+            }
+        )
+    }
+
+    val encryptedTarget = passwordTarget
+    if (encryptedTarget != null || pendingImportText != null) {
+        AlertDialog(
+            onDismissRequest = {
+                passwordTarget = null
+                pendingImportText = null
+                passwordInput = ""
+            },
+            title = { Text("备份已加密") },
+            text = {
+                Column {
+                    Text("请输入备份口令。口令错误或遗忘都将无法恢复该备份。", fontSize = 12.sp)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = passwordInput,
+                        onValueChange = { passwordInput = it },
+                        singleLine = true,
+                        label = { Text("备份口令", fontSize = 12.sp) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val pwd = passwordInput
+                    val info = encryptedTarget
+                    val text = pendingImportText
+                    passwordTarget = null
+                    pendingImportText = null
+                    passwordInput = ""
+                    if (info != null) {
+                        if (pwd.isBlank()) {
+                            message = "请输入备份口令"
+                        } else {
+                            controller.restoreBackup(info, pwd) { _, msg -> message = msg }
+                        }
+                    } else if (text != null) {
+                        if (pwd.isBlank()) {
+                            message = "请输入备份口令"
+                        } else {
+                            controller.restoreSiteData(text, pwd) { _, msg -> message = msg }
+                        }
+                    }
+                }) { Text("解密并恢复") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    passwordTarget = null
+                    pendingImportText = null
+                    passwordInput = ""
+                }) { Text("取消") }
             }
         )
     }
@@ -2354,6 +2632,8 @@ private fun GlobalBackupSection(controller: BrowserController) {
     var keep by remember { mutableStateOf(app.settings.globalBackupKeep) }
     var pendingDelete by remember { mutableStateOf<BackupInfo?>(null) }
     var pendingRestore by remember { mutableStateOf<BackupInfo?>(null) }
+    var globalPasswordTarget by remember { mutableStateOf<BackupInfo?>(null) }
+    var globalPasswordInput by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         items = app.globalBackups.list()
@@ -2527,6 +2807,11 @@ private fun GlobalBackupSection(controller: BrowserController) {
             confirmButton = {
                 TextButton(onClick = {
                     pendingRestore = null
+                    if (app.backups.isEncrypted(info)) {
+                        globalPasswordInput = ""
+                        globalPasswordTarget = info
+                        return@TextButton
+                    }
                     busy = true
                     scope.launch {
                         val result = app.globalBackups.restore(info)
@@ -2543,6 +2828,52 @@ private fun GlobalBackupSection(controller: BrowserController) {
             },
             dismissButton = {
                 TextButton(onClick = { pendingRestore = null }) { Text("取消") }
+            }
+        )
+    }
+
+    val encryptedGlobal = globalPasswordTarget
+    if (encryptedGlobal != null) {
+        AlertDialog(
+            onDismissRequest = { globalPasswordTarget = null },
+            title = { Text("备份已加密") },
+            text = {
+                Column {
+                    Text("请输入该备份的口令。", fontSize = 12.sp)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = globalPasswordInput,
+                        onValueChange = { globalPasswordInput = it },
+                        singleLine = true,
+                        label = { Text("备份口令", fontSize = 12.sp) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val pwd = globalPasswordInput
+                    globalPasswordTarget = null
+                    if (pwd.isBlank()) {
+                        message = "请输入备份口令"
+                    } else {
+                        busy = true
+                        scope.launch {
+                            val result = app.globalBackups.restore(encryptedGlobal, pwd)
+                            busy = false
+                            message = result.getOrElse { it.message ?: "恢复失败" }
+                            if (result.isSuccess) {
+                                ThemeController.set(context, app.settings.appTheme)
+                                controller.applySettings()
+                                controller.applyFollowPageTheme(app.settings.followPageTheme)
+                                autoBackup = app.settings.autoBackupGlobal
+                            }
+                        }
+                    }
+                }) { Text("解密并恢复") }
+            },
+            dismissButton = {
+                TextButton(onClick = { globalPasswordTarget = null }) { Text("取消") }
             }
         )
     }
@@ -2682,6 +3013,40 @@ private fun PermissionCenterPage(controller: BrowserController) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
         )
+        // 授权到期提醒：24 小时内到期的站点集中提示
+        val now = System.currentTimeMillis()
+        val expiring = permissions.filter {
+            it.expiresAt > now && it.expiresAt - now <= 24L * 60 * 60 * 1000
+        }
+        if (expiring.isNotEmpty()) {
+            Surface(
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 4.dp)
+            ) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    Text(
+                        "${expiring.size} 个站点的授权将在 24 小时内到期",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    expiring.take(4).forEach { permission ->
+                        Text(
+                            "· ${permission.host}",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    }
+                    TextButton(
+                        onClick = { editing = expiring.first() },
+                        contentPadding = PaddingValues(0.dp)
+                    ) { Text("去续期", fontSize = 12.sp) }
+                }
+            }
+        }
         Row(
             Modifier
                 .fillMaxWidth()
@@ -3102,6 +3467,41 @@ private fun PageDiagnosticsPage(controller: BrowserController) {
     }
 
     val logs = controller.diagnostics
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        if (uri != null) {
+            val text = buildString {
+                append("轻光浏览器 页面诊断\n")
+                append("页面：").append(controller.currentUrl).append('\n')
+                append("导出时间：")
+                    .append(SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date()))
+                    .append("\n\n")
+                append("=== 页面错误 ===\n")
+                if (logs.isEmpty()) append("（无）\n") else logs.forEach { append(it).append('\n') }
+                append("\n=== 站点本地存储 ===\n")
+                if (keys.isEmpty()) append("（无）\n") else keys.forEach { entry ->
+                    append(entry.key).append(" | ")
+                        .append(BackupManager.formatSize(entry.sizeChars.toLong()))
+                        .append(" | 首次发现 ")
+                        .append(
+                            SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault())
+                                .format(Date(entry.firstSeenMs))
+                        )
+                        .append('\n')
+                }
+            }
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use {
+                    it.write(text.toByteArray(Charsets.UTF_8))
+                } ?: error("无法写入")
+            }.onSuccess {
+                Toast.makeText(context, "诊断日志已导出", Toast.LENGTH_SHORT).show()
+            }.onFailure {
+                Toast.makeText(context, "导出失败：${it.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
     Column(Modifier.fillMaxSize()) {
         Text(
             if (controller.currentUrl.isBlank()) "当前没有打开网页"
@@ -3136,6 +3536,18 @@ private fun PageDiagnosticsPage(controller: BrowserController) {
             }
             TextButton(onClick = { controller.reload() }) { Text("重新加载", fontSize = 12.sp) }
             TextButton(onClick = { confirmRepair = true }) { Text("修复异常值", fontSize = 12.sp) }
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            TextButton(onClick = {
+                val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.getDefault())
+                    .format(Date())
+                exportLauncher.launch("页面诊断-$stamp.txt")
+            }) { Text("导出诊断日志文件", fontSize = 12.sp) }
         }
         if (logs.isEmpty()) {
             Text(

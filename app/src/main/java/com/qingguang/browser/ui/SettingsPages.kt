@@ -2,6 +2,8 @@ package com.qingguang.browser.ui
 
 import android.Manifest
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -42,6 +44,7 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -59,6 +62,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,10 +76,12 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.qingguang.browser.App
 import com.qingguang.browser.BuildConfig
+import com.qingguang.browser.StartupProfile
 import com.qingguang.browser.ui.theme.ThemeController
 import com.qingguang.browser.util.SettingsStore
 import com.qingguang.browser.web.BrowserController
 import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 /** 设置目录分组 */
 private enum class SettingsSection(
@@ -88,6 +94,7 @@ private enum class SettingsSection(
     MENU("菜单定制", "功能菜单排序与每页行数", Icons.Filled.Apps),
     HOME("首页", "快捷入口页数与摆放方式", Icons.Filled.Home),
     DATA("数据与备份", "自动备份、备份目录、清理数据", Icons.Filled.CloudUpload),
+    PERFORMANCE("性能与诊断", "冷启动耗时、崩溃记录、诊断日志", Icons.Filled.Speed),
     PERMISSION("权限", "定位等系统权限", Icons.Filled.LocationOn),
     ABOUT("关于", "版本与产品信息", Icons.Filled.Info)
 }
@@ -115,6 +122,7 @@ private fun SettingsDirectory(onOpen: (SettingsSection) -> Unit) {
         SettingsSectionRow(SettingsSection.HOME, onOpen)
         SettingsSectionRow(SettingsSection.DATA, onOpen)
         SettingsGroup("系统")
+        SettingsSectionRow(SettingsSection.PERFORMANCE, onOpen)
         SettingsSectionRow(SettingsSection.PERMISSION, onOpen)
         SettingsSectionRow(SettingsSection.ABOUT, onOpen)
         Spacer(Modifier.height(24.dp))
@@ -205,6 +213,7 @@ private fun SettingsDetail(
                 SettingsSection.MENU -> MenuSettings()
                 SettingsSection.HOME -> HomeSettings()
                 SettingsSection.DATA -> DataSettings(controller)
+                SettingsSection.PERFORMANCE -> PerformanceSettings(controller)
                 SettingsSection.PERMISSION -> PermissionSettings()
                 SettingsSection.ABOUT -> AboutSettings()
             }
@@ -680,6 +689,17 @@ private fun BrowsingSettings(controller: BrowserController) {
         modifier = Modifier.padding(horizontal = 18.dp)
     )
 
+    var groupBySite by remember { mutableStateOf(app.settings.tabGroupBySite) }
+    SettingsSwitchRow("标签面板按站点分组", groupBySite) { value ->
+        groupBySite = value
+        app.settings.tabGroupBySite = value
+    }
+    var restoreTabs by remember { mutableStateOf(app.settings.restoreTabs) }
+    SettingsSwitchRow("启动时恢复上次打开的标签页", restoreTabs) { value ->
+        restoreTabs = value
+        app.settings.restoreTabs = value
+    }
+
     SettingsGroup("手势")
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     SettingsSwitchRow("下拉刷新网页", pullRefresh) { value ->
@@ -955,6 +975,7 @@ private fun HomeSettings() {
 private fun DataSettings(controller: BrowserController) {
     val context = LocalContext.current
     val app = context.applicationContext as App
+    val scope = rememberCoroutineScope()
     var autoBackup by remember { mutableStateOf(app.settings.autoBackup) }
     var treeUri by remember { mutableStateOf(app.settings.backupTreeUri) }
 
@@ -1002,6 +1023,106 @@ private fun DataSettings(controller: BrowserController) {
         }
     }
 
+    SettingsGroup("备份加密")
+    var encrypt by remember { mutableStateOf(app.settings.backupEncrypt) }
+    var password by remember { mutableStateOf(app.settings.backupPassword) }
+    SettingsSwitchRow("加密备份文件（需口令）", encrypt) { value ->
+        if (value && password.isBlank()) {
+            Toast.makeText(context, "请先设置备份口令", Toast.LENGTH_SHORT).show()
+        }
+        encrypt = value
+        app.settings.backupEncrypt = value
+    }
+    if (encrypt) {
+        OutlinedTextField(
+            value = password,
+            onValueChange = {
+                password = it
+                app.settings.backupPassword = it
+            },
+            singleLine = true,
+            label = { Text("备份口令", fontSize = 12.sp) },
+            placeholder = { Text("恢复加密备份时需要输入", fontSize = 12.sp) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 4.dp)
+        )
+        Text(
+            "加密使用 AES/GCM 与口令派生密钥。口令只保存在本机，遗忘后无法恢复备份内容。",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 18.dp)
+        )
+    }
+
+    SettingsGroup("备份保留份数")
+    var keep by remember { mutableStateOf(app.settings.siteBackupKeep) }
+    Text(
+        "站点备份最多保留 $keep 份，超出后自动删除最旧的",
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 18.dp)
+    )
+    Slider(
+        value = keep.toFloat(),
+        onValueChange = {
+            keep = it.roundToInt()
+            app.settings.siteBackupKeep = keep
+        },
+        valueRange = 1f..30f,
+        steps = 28,
+        modifier = Modifier.padding(horizontal = 18.dp)
+    )
+    Row(Modifier.padding(horizontal = 10.dp)) {
+        TextButton(onClick = {
+            scope.launch {
+                val removed = app.backups.pruneSiteBackups()
+                Toast.makeText(context, "已清理 $removed 个旧备份", Toast.LENGTH_SHORT).show()
+            }
+        }) { Text("立即清理旧备份") }
+    }
+
+    SettingsGroup("操作记录")
+    var auditClean by remember { mutableStateOf(app.settings.auditAutoClean) }
+    var auditDays by remember { mutableStateOf(app.settings.auditKeepDays) }
+    SettingsSwitchRow("自动清理操作记录", auditClean) { value ->
+        auditClean = value
+        app.settings.auditAutoClean = value
+    }
+    if (auditClean) {
+        Text(
+            "保留最近 $auditDays 天的记录",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 18.dp)
+        )
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            listOf(7, 30, 90, 365).forEach { days ->
+                FilterChip(
+                    selected = auditDays == days,
+                    onClick = {
+                        auditDays = days
+                        app.settings.auditKeepDays = days
+                    },
+                    label = { Text("$days 天", fontSize = 12.sp) }
+                )
+            }
+        }
+    }
+    Row(Modifier.padding(horizontal = 10.dp)) {
+        TextButton(onClick = {
+            scope.launch {
+                val cutoff = System.currentTimeMillis() -
+                    app.settings.auditKeepDays * 24L * 60 * 60 * 1000
+                runCatching { app.database.auditLogDao().deleteOlderThan(cutoff) }
+                Toast.makeText(context, "已清理过期操作记录", Toast.LENGTH_SHORT).show()
+            }
+        }) { Text("立即清理操作记录") }
+    }
+
     SettingsGroup("数据清理")
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     Row(Modifier.padding(horizontal = 10.dp)) {
@@ -1024,6 +1145,112 @@ private fun DataSettings(controller: BrowserController) {
         },
         modifier = Modifier.padding(horizontal = 10.dp)
     ) { Text("备份当前页") }
+}
+
+@Composable
+private fun PerformanceSettings(controller: BrowserController) {
+    val context = LocalContext.current
+    val app = context.applicationContext as App
+    var showCrash by remember { mutableStateOf(false) }
+    var crashText by remember { mutableStateOf<String?>(null) }
+
+    SettingsGroup("冷启动分段耗时（本次运行）")
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    val entries = StartupProfile.entries
+    if (entries.isEmpty()) {
+        Text(
+            "本次启动还没有采集到数据，重启应用后再查看。",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp)
+        )
+    } else {
+        entries.forEach { (label, ms) ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(label, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                Text(
+                    "$ms ms",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Row(Modifier.padding(horizontal = 10.dp)) {
+            TextButton(onClick = {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("启动耗时", StartupProfile.report()))
+                Toast.makeText(context, "已复制启动耗时", Toast.LENGTH_SHORT).show()
+            }) { Text("复制") }
+        }
+    }
+    Text(
+        "数据库预热在后台线程执行，不阻塞首帧；数值越大代表该环节越慢。",
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 18.dp)
+    )
+
+    SettingsGroup("崩溃记录")
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    val crashFile = app.lastCrashFile()
+    Text(
+        if (crashFile.isFile) "已保存上次异常退出的崩溃栈（${crashFile.length()} 字节）"
+        else "没有崩溃记录",
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)
+    )
+    Row(Modifier.padding(horizontal = 10.dp)) {
+        TextButton(
+            enabled = crashFile.isFile,
+            onClick = {
+                crashText = runCatching { crashFile.readText(Charsets.UTF_8) }.getOrNull()
+                showCrash = true
+            }
+        ) { Text("查看") }
+        TextButton(
+            enabled = crashFile.isFile,
+            onClick = {
+                app.clearCrashLog()
+                Toast.makeText(context, "崩溃记录已清除", Toast.LENGTH_SHORT).show()
+            }
+        ) { Text("清除") }
+    }
+
+    SettingsGroup("页面诊断")
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    Row(Modifier.padding(horizontal = 10.dp)) {
+        TextButton(onClick = {
+            controller.clearDiagnostics()
+            Toast.makeText(context, "当前页面的诊断记录已清空", Toast.LENGTH_SHORT).show()
+        }) { Text("清空当前诊断") }
+    }
+    Text(
+        "页面诊断与导出入口在菜单 →「页面诊断」中，可导出为文本文件。",
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 18.dp)
+    )
+
+    if (showCrash) {
+        AlertDialog(
+            onDismissRequest = { showCrash = false },
+            title = { Text("崩溃记录") },
+            text = {
+                Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
+                    Text(crashText.orEmpty(), fontSize = 11.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showCrash = false }) { Text("关闭") }
+            }
+        )
+    }
 }
 
 @Composable

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 分享本地网页导出的 zip（应用缓存目录） -->
+    <cache-path name="site_export" path="site_export/" />
+    <cache-path name="shared" path="." />
+    <!-- 导出页面诊断日志 -->
+    <cache-path name="diagnostics" path="diagnostics/" />
+</paths>
