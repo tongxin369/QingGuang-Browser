@@ -298,7 +298,8 @@ class BackupManager(
 
         private const val RESTORE_LOCAL_STORAGE_JS =
             "(function(d){try{var o=JSON.parse(d);localStorage.clear();" +
-                "for(var k in o){localStorage.setItem(k,o[k]);}return 'ok';}catch(e){return 'err:'+e.message;}})('__DATA__')"
+                "for(var k in o){if(o[k]===null||o[k]===undefined)continue;localStorage.setItem(k,o[k]);}" +
+                "return 'ok';}catch(e){return 'err:'+e.message;}})('__DATA__')"
 
         /** 导出全部 IndexedDB（库名、版本、对象仓库、索引、记录） */
         private val EXPORT_INDEXED_DB_JS = """

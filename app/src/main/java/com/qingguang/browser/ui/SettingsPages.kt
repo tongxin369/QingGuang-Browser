@@ -14,6 +14,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -294,6 +295,9 @@ private fun AppearanceSettings(controller: BrowserController) {
         val saved = app.settings.nightTuningFor(currentHost)
         var brightness by remember(currentHost) { mutableStateOf(saved.first) }
         var contrast by remember(currentHost) { mutableStateOf(saved.second) }
+        var warmth by remember(currentHost) {
+            mutableStateOf(app.settings.nightWarmthFor(currentHost))
+        }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         SettingsGroup("夜间网页调色")
         Text(
@@ -330,6 +334,21 @@ private fun AppearanceSettings(controller: BrowserController) {
             valueRange = 70f..130f
         )
         Text(
+            "色温 $warmth（0 不偏色，越大越暖）",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.secondary,
+            modifier = Modifier.padding(horizontal = 18.dp)
+        )
+        Slider(
+            value = warmth.toFloat(),
+            onValueChange = {
+                warmth = it.roundToInt()
+                app.settings.setNightWarmthFor(currentHost, warmth)
+                controller.applyNightTuning()
+            },
+            valueRange = 0f..100f
+        )
+        Text(
             if (currentHost.isBlank()) "没有打开网页时调整的是全局默认值；打开网页后调整会被该站点记住。"
             else "调整会记住到「$currentHost」，其他站点继续使用全局值。",
             fontSize = 11.sp,
@@ -340,9 +359,11 @@ private fun AppearanceSettings(controller: BrowserController) {
             TextButton(
                 onClick = {
                     app.settings.setNightTuningFor(currentHost, 0, 0)
+                    app.settings.setNightWarmthFor(currentHost, -1)
                     val global = app.settings.nightTuningFor("")
                     brightness = global.first
                     contrast = global.second
+                    warmth = app.settings.nightWarmthFor("")
                     controller.applyNightTuning()
                 },
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
@@ -396,6 +417,86 @@ private fun AppearanceSettings(controller: BrowserController) {
                     }
                 )
             }
+        }
+
+        // 批量管理「不反色」站点
+        var showNoInvertManager by remember { mutableStateOf(false) }
+        var noInvertHosts by remember { mutableStateOf(app.settings.nightNoInvertList()) }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 6.dp)
+                .clickable {
+                    noInvertHosts = app.settings.nightNoInvertList()
+                    showNoInvertManager = true
+                },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("管理「不反色」站点（${noInvertHosts.size}）", fontSize = 13.sp)
+                Text(
+                    "这些站点在夜间保留原始配色，只做压暗",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Icon(
+                Icons.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (showNoInvertManager) {
+            AlertDialog(
+                onDismissRequest = { showNoInvertManager = false },
+                title = { Text("不反色站点") },
+                text = {
+                    if (noInvertHosts.isEmpty()) {
+                        Text("还没有站点加入不反色清单。", fontSize = 13.sp)
+                    } else {
+                        Column(
+                            Modifier
+                                .heightIn(max = 380.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            noInvertHosts.forEach { host ->
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        host,
+                                        fontSize = 13.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    TextButton(onClick = {
+                                        app.settings.setNightNoInvert(host, false)
+                                        noInvertHosts = app.settings.nightNoInvertList()
+                                        controller.applyNightTuning()
+                                    }) { Text("移除", fontSize = 12.sp) }
+                                }
+                                HorizontalDivider(
+                                    color = MaterialTheme.colorScheme.outlineVariant
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showNoInvertManager = false }) { Text("完成") }
+                },
+                dismissButton = {
+                    if (noInvertHosts.isNotEmpty()) {
+                        TextButton(onClick = {
+                            app.settings.clearNightNoInvertHosts()
+                            noInvertHosts = emptyList()
+                            controller.applyNightTuning()
+                        }) { Text("全部清除") }
+                    }
+                }
+            )
         }
     }
 
@@ -538,6 +639,28 @@ private fun BrowsingSettings(controller: BrowserController) {
         showTabRestore = value
         app.settings.showTabRestore = value
     }
+    var tabPanelHeight by remember { mutableStateOf(app.settings.tabPanelHeight) }
+    Text(
+        "标签面板高度 $tabPanelHeight dp（约 ${(tabPanelHeight / 66f).toInt()} 个标签可见）",
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp)
+    )
+    Slider(
+        value = tabPanelHeight.toFloat(),
+        onValueChange = {
+            tabPanelHeight = it.roundToInt()
+            app.settings.tabPanelHeight = tabPanelHeight
+        },
+        valueRange = 220f..720f,
+        modifier = Modifier.padding(horizontal = 18.dp)
+    )
+    Text(
+        "调大后面板最多铺到网页区域高度；超出的标签继续上下滑动。",
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 18.dp)
+    )
     var tabLimit by remember { mutableStateOf(app.settings.tabLimit) }
     SettingsGroup("标签页数量上限")
     Text(

@@ -182,6 +182,65 @@ class BrowserController(private val activity: Activity) {
     /** 等待用户确认的麦克风/摄像头请求 */
     var pendingMediaRequest by mutableStateOf<PendingMediaRequest?>(null)
 
+    /** 当前页面的控制台 / 脚本错误 / 资源加载失败记录（供「页面诊断」查看，无需 logcat） */
+    val diagnostics = androidx.compose.runtime.mutableStateListOf<String>()
+
+    fun clearDiagnostics() {
+        diagnostics.clear()
+    }
+
+    private fun addDiagnostic(line: String) {
+        diagnostics.add(line)
+        while (diagnostics.size > 120) diagnostics.removeAt(0)
+    }
+
+    /** 读取当前页面的 localStorage 键与大小，回调 JSON：[[key,size],...] */
+    fun readLocalStorage(callback: (String) -> Unit) {
+        val view = currentTab()?.webView
+        if (view == null) {
+            callback("[]")
+            return
+        }
+        view.evaluateJavascript(
+            "(function(){try{var out=[];for(var i=0;i<localStorage.length;i++){" +
+                "var k=localStorage.key(i);var v=localStorage.getItem(k)||'';" +
+                "out.push([k,v.length]);}return JSON.stringify(out);}catch(e){return '[]';}})()"
+        ) { raw ->
+            val text = runCatching { JSONTokener(raw).nextValue() as? String }.getOrNull()
+            callback(text ?: "[]")
+        }
+    }
+
+    /** 清扫被写成字符串 null/undefined/NaN 的本地存储值（旧备份恢复留下的坏数据），回调清除条数 */
+    fun repairCorruptedStorage(callback: (Int) -> Unit) {
+        val view = currentTab()?.webView
+        if (view == null) {
+            callback(0)
+            return
+        }
+        view.evaluateJavascript(
+            "(function(){var n=0;try{var bad=[];for(var i=0;i<localStorage.length;i++){" +
+                "var k=localStorage.key(i);var v=localStorage.getItem(k);" +
+                "if(v==='null'||v==='undefined'||v==='NaN')bad.push(k);}" +
+                "for(var j=0;j<bad.length;j++){localStorage.removeItem(bad[j]);n++;}}" +
+                "catch(e){}return n;})()"
+        ) { raw ->
+            callback(raw.trim().trim('"').toIntOrNull() ?: 0)
+        }
+    }
+
+    /** 只删除指定的本地存储键（保留其他数据），并重新加载页面 */
+    fun deleteLocalStorageKey(key: String, callback: () -> Unit = {}) {
+        val view = currentTab()?.webView ?: return
+        val quoted = org.json.JSONObject.quote(key)
+        view.evaluateJavascript(
+            "(function(){try{localStorage.removeItem($quoted);return true;}catch(e){return false;}})()"
+        ) { _ ->
+            view.reload()
+            callback()
+        }
+    }
+
     /** 本次会话内已确认过的站点（「每次询问」不再重复弹出） */
     private val mediaSessionAllowed = androidx.compose.runtime.mutableStateListOf<String>()
 
@@ -316,9 +375,14 @@ class BrowserController(private val activity: Activity) {
     fun switchTab(id: String) {
         val index = tabs.indexOfFirst { it.id == id }
         if (index < 0) return
+        val tab = tabs[index]
+        // 标签里已经加载过页面时，点这个标签就回到该网页（返回首页不会丢掉网页）
+        val loadedUrl = tab.webView.url
+        val hasPage = !loadedUrl.isNullOrBlank() && !loadedUrl.startsWith("about:")
+        tab.showsHome = tab.showsHome && !hasPage
         activeIndex = index
         // 每个标签各自记住是否停留在首页
-        showHome = tabs[index].showsHome
+        showHome = tab.showsHome
         pageThemeColor = null
         renderContainer()
         refresh()
@@ -327,13 +391,7 @@ class BrowserController(private val activity: Activity) {
 
     fun goHome() {
         stopReadAloud()
-        // 从网页返回首页：关闭当前网页标签，避免标签越积越多
-        val tab = currentTab()
-        val url = tab?.webView?.url
-        val hasPage = !url.isNullOrBlank() && !url.startsWith("about:")
-        if (tab != null && hasPage && !tab.locked) {
-            closeTab(tab.id)
-        }
+        // 返回首页只是切回首页视图，标签页与网页内容都保留（切回该标签即可继续浏览）
         if (tabs.isEmpty()) newTabInternal()
         currentTab()?.showsHome = true
         showHome = true
@@ -678,6 +736,10 @@ class BrowserController(private val activity: Activity) {
                     "QGJS",
                     "load error ${error.errorCode} main=${request.isForMainFrame} ${request.url}"
                 )
+                addDiagnostic(
+                    "加载失败 ${error.errorCode} ${if (request.isForMainFrame) "主页面" else "子资源"} " +
+                        request.url
+                )
             }
 
             override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
@@ -754,6 +816,9 @@ class BrowserController(private val activity: Activity) {
                     android.util.Log.i(
                         "QGJS",
                         "${msg.message()} (${msg.sourceId()}:${msg.lineNumber()})"
+                    )
+                    addDiagnostic(
+                        "[${msg.messageLevel()}] ${msg.message()} (${msg.sourceId()}:${msg.lineNumber()})"
                     )
                 }
                 return true
@@ -898,13 +963,24 @@ class BrowserController(private val activity: Activity) {
             val extra = " brightness($b) contrast($c)"
             val noInvert = app.settings.isNightNoInvert(host)
             val imgExtra = " brightness(${app.settings.nightImageBrightness / 100f})"
+            // 色温：0 不偏色，越大越暖。反色后整体偏冷，用 sepia+saturate 拉回暖感
+            val warmth = app.settings.nightWarmthFor(host)
+            val warmExtra = if (warmth > 0) {
+                val ratio = warmth / 100f
+                " sepia(${ratio * 0.45f}) saturate(${1f + ratio * 0.3f})"
+            } else ""
             view.evaluateJavascript(
                 NIGHT_CSS_JS.replace(
                     "/*EXTRA*/",
-                    "window.__qgNightExtra='$extra';" +
+                    "window.__qgNightExtra='$extra$warmExtra';" +
                         "window.__qgNightNoInvert=" + noInvert + ";" +
                         "window.__qgNightImg='$imgExtra';"
                 ),
+                null
+            )
+            // 已加载的同源 iframe 也要跟上运行时调色（跨域 iframe 由文档开始脚本自行处理）
+            view.evaluateJavascript(
+                frameApplyJs(brightness, contrast, warmth, noInvert),
                 null
             )
         } else {
@@ -965,6 +1041,47 @@ class BrowserController(private val activity: Activity) {
         topFrameInverted = false
         view.setBackgroundColor(0x00000000)
         view.evaluateJavascript(REMOVE_NIGHT_JS, null)
+        view.evaluateJavascript(FRAME_CLEAR_JS, null)
+    }
+
+    /** 对已加载的同源 iframe 应用当前夜间调色参数（跨域 iframe 只能靠文档开始脚本） */
+    private fun frameApplyJs(
+        brightness: Int,
+        contrast: Int,
+        warmth: Int,
+        noInvert: Boolean
+    ): String {
+        val extra = buildString {
+            append(" brightness(${brightness / 100f})")
+            append(" contrast(${contrast / 100f})")
+            if (warmth > 0) {
+                val ratio = warmth / 100f
+                append(" sepia(${ratio * 0.45f}) saturate(${1f + ratio * 0.3f})")
+            }
+        }
+        return "(function(){try{" +
+            "var extra='$extra',noInvert=$noInvert;" +
+            "function apply(d){" +
+            "try{" +
+            "var body=d.body||d.documentElement;if(!body)return;" +
+            "var bg=d.defaultView.getComputedStyle(body).backgroundColor||'';" +
+            "var m=bg.match(/rgba?\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)/i);" +
+            "var light=true;if(m){var l=(0.299*(+m[1])+0.587*(+m[2])+0.114*(+m[3]))/255;light=l>0.55;}" +
+            "var css;" +
+            "if(light&&!noInvert){css='html{filter:invert(1) hue-rotate(180deg)'+extra+';background:#101214!important}'+" +
+            "'img,video,canvas,svg,picture{filter:invert(1) hue-rotate(180deg)!important}';}" +
+            "else if(light){css='html{background:#f4f4f4!important;filter:'+extra+'}';}" +
+            "else{css='html{color-scheme:dark;background:#101214!important;filter:'+extra+'}';}" +
+            "var s=d.getElementById('qg-night-frame');" +
+            "if(!s){s=d.createElement('style');s.id='qg-night-frame';(d.head||d.documentElement).appendChild(s);}" +
+            "if(s.textContent!==css)s.textContent=css;" +
+            "}catch(e){}}" +
+            "var fs=document.querySelectorAll('iframe,frame');" +
+            "for(var i=0;i<fs.length;i++){" +
+            "var d=null;try{d=fs[i].contentDocument;}catch(e){continue;}" +
+            "if(d&&d.documentElement)apply(d);" +
+            "}" +
+            "}catch(e){}})()"
     }
 
     private fun isSystemDark(): Boolean =
@@ -2392,6 +2509,17 @@ class BrowserController(private val activity: Activity) {
                 "if(st&&st.parentNode)st.parentNode.removeChild(st);clean(sr);}}catch(e){}}" +
                 "clean(document);" +
                 "try{QingGuangGestures.markTopInversion(false);}catch(e){}" +
+                "}catch(e){}})()"
+
+        /** 关闭夜间调色时，清掉同源 iframe 里的补色样式 */
+        private const val FRAME_CLEAR_JS =
+            "(function(){try{" +
+                "var fs=document.querySelectorAll('iframe,frame');" +
+                "for(var i=0;i<fs.length;i++){" +
+                "var d=null;try{d=fs[i].contentDocument;}catch(e){continue;}" +
+                "if(!d||!d.documentElement)continue;" +
+                "var s=d.getElementById('qg-night-frame');if(s&&s.parentNode)s.parentNode.removeChild(s);" +
+                "}" +
                 "}catch(e){}})()"
 
         private const val AD_HIDE_JS =

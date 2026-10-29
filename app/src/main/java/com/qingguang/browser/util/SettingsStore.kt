@@ -142,10 +142,49 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_HOME_WALLPAPER, null)
         set(value) = prefs.edit().putString(KEY_HOME_WALLPAPER, value).apply()
 
+    /** 标签面板最大高度（dp）。默认 370，可调到接近网页区域高度；面板本身会按可用高度再收敛 */
+    var tabPanelHeight: Int
+        get() = prefs.getInt(KEY_TAB_PANEL_HEIGHT, 370).coerceIn(220, 720)
+        set(value) = prefs.edit().putInt(KEY_TAB_PANEL_HEIGHT, value.coerceIn(220, 720)).apply()
+
     /** 夜间强制深色网页（注入 CSS 反色） */
     var nightWeb: Boolean
         get() = prefs.getBoolean(KEY_NIGHT_WEB, false)
         set(value) = prefs.edit().putBoolean(KEY_NIGHT_WEB, value).apply()
+
+    /** 夜间网页色温（0–100，默认 0 不偏色；数值越大越暖） */
+    var nightWarmth: Int
+        get() = prefs.getInt(KEY_NIGHT_WARMTH, 0).coerceIn(0, 100)
+        set(value) = prefs.edit().putInt(KEY_NIGHT_WARMTH, value.coerceIn(0, 100)).apply()
+
+    /** 站点记忆的夜间色温（JSON 对象：host -> 数值） */
+    var siteNightWarmthJson: String
+        get() = prefs.getString(KEY_SITE_NIGHT_WARMTH, "").orEmpty()
+        set(value) = prefs.edit().putString(KEY_SITE_NIGHT_WARMTH, value).apply()
+
+    fun nightWarmthFor(host: String): Int {
+        val key = host.trim().lowercase()
+        if (key.isNotBlank()) {
+            runCatching {
+                val obj = org.json.JSONObject(siteNightWarmthJson)
+                if (obj.has(key)) return obj.optInt(key, nightWarmth).coerceIn(0, 100)
+            }
+        }
+        return nightWarmth
+    }
+
+    /** 记住该站点的夜间色温；value < 0 表示清除该站点记忆 */
+    fun setNightWarmthFor(host: String, value: Int) {
+        val key = host.trim().lowercase()
+        if (key.isBlank()) {
+            if (value >= 0) nightWarmth = value
+            return
+        }
+        val obj = runCatching { org.json.JSONObject(siteNightWarmthJson) }
+            .getOrDefault(org.json.JSONObject())
+        if (value < 0) obj.remove(key) else obj.put(key, value.coerceIn(0, 100))
+        siteNightWarmthJson = obj.toString()
+    }
 
     /** 广告拦截自定义域名，换行/逗号分隔 */
     var adBlockExtraHosts: String
@@ -191,6 +230,17 @@ class SettingsStore(context: Context) {
             .split(',')
             .map { it.trim() }
             .any { it.isNotBlank() && it == key }
+    }
+
+    /** 「不反色」站点清单，供设置页批量管理 */
+    fun nightNoInvertList(): List<String> = nightNoInvertHosts
+        .split(',')
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinct()
+
+    fun clearNightNoInvertHosts() {
+        nightNoInvertHosts = ""
     }
 
     fun setNightNoInvert(host: String, enabled: Boolean) {
@@ -241,12 +291,16 @@ class SettingsStore(context: Context) {
         siteNightTuningJson = obj.toString()
     }
 
-    /** 该站点是否单独记忆过夜间亮度 */
+    /** 该站点是否单独记忆过夜间亮度或色温 */
     fun hasSiteNightTuning(host: String): Boolean {
         val key = host.trim().lowercase()
         if (key.isBlank()) return false
-        return runCatching {
+        val hasBrightness = runCatching {
             org.json.JSONObject(siteNightTuningJson).optString(key, "").isNotBlank()
+        }.getOrDefault(false)
+        if (hasBrightness) return true
+        return runCatching {
+            org.json.JSONObject(siteNightWarmthJson).has(key)
         }.getOrDefault(false)
     }
 
@@ -286,6 +340,9 @@ class SettingsStore(context: Context) {
         private const val KEY_SITE_NIGHT_TUNING = "site_night_tuning"
         private const val KEY_NIGHT_IMAGE_BRIGHTNESS = "night_image_brightness"
         private const val KEY_NIGHT_NO_INVERT = "night_no_invert"
+        private const val KEY_TAB_PANEL_HEIGHT = "tab_panel_height"
+        private const val KEY_NIGHT_WARMTH = "night_warmth"
+        private const val KEY_SITE_NIGHT_WARMTH = "site_night_warmth"
 
         const val DEFAULT_SEARCH_ENGINE = "https://www.bing.com/search?q=%s"
         const val DESKTOP_UA =

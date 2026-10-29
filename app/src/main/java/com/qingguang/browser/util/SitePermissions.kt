@@ -19,8 +19,13 @@ data class SitePermission(
     /** 麦克风/摄像头按次询问（默认关闭，开启后每次网页请求都需要确认） */
     val askEachTime: Boolean = false,
     /** 夜间网页调色：-1 跟随全局，0 强制关闭，1 强制开启 */
-    val nightMode: Int = -1
+    val nightMode: Int = -1,
+    /** 授权有效期（到期自动失效）；0 表示永久 */
+    val expiresAt: Long = 0L
 ) {
+    fun isExpired(now: Long = System.currentTimeMillis()): Boolean =
+        expiresAt in 1 until now
+
     fun summary(): String = buildList {
         if (allowGeo) add("定位") else add("禁定位")
         if (allowCamera) add("摄像头") else add("禁摄像头")
@@ -31,6 +36,8 @@ data class SitePermission(
         if (allowJs) add("JS") else add("禁JS")
         if (allowImages) add("图片") else add("禁图片")
         if (nightMode == 1) add("夜间调色") else if (nightMode == 0) add("禁夜间调色")
+        if (isExpired()) add("已过期")
+        else if (expiresAt > 0) add("有期限")
     }.joinToString(" · ")
 }
 
@@ -55,7 +62,8 @@ object SitePermissionStore {
                     allowJs = obj.optBoolean("allowJs", true),
                     allowImages = obj.optBoolean("allowImages", true),
                     askEachTime = obj.optBoolean("askEachTime", false),
-                    nightMode = obj.optInt("nightMode", -1)
+                    nightMode = obj.optInt("nightMode", -1),
+                    expiresAt = obj.optLong("expiresAt", 0L)
                 )
             }
         }.getOrDefault(emptyList())
@@ -75,6 +83,7 @@ object SitePermissionStore {
                 put("allowImages", permission.allowImages)
                 put("askEachTime", permission.askEachTime)
                 put("nightMode", permission.nightMode)
+                put("expiresAt", permission.expiresAt)
             })
         }
         settings.sitePermissionsJson = array.toString()
@@ -87,7 +96,8 @@ object SitePermissionStore {
     fun find(settings: SettingsStore, host: String): SitePermission? {
         val key = host.trim().lowercase()
         if (key.isBlank()) return null
-        val list = load(settings)
+        // 到期条目直接视为未配置（回退到默认策略）
+        val list = load(settings).filterNot { it.isExpired() }
         list.firstOrNull { it.host == key }?.let { return it }
         val wildcard = list.firstOrNull { entry ->
             val raw = entry.host

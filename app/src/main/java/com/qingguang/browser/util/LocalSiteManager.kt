@@ -382,6 +382,65 @@ class LocalSiteManager(private val context: Context) {
         siteDir(siteId).deleteRecursively()
     }
 
+    /** 删除站点副本里的单个网页文件（相对路径）；返回是否删除成功 */
+    suspend fun deleteHtmlFile(siteId: String, relativePath: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val dir = siteDir(siteId)
+            val target = File(dir, relativePath)
+            // 防止 ../ 越界删除
+            if (!target.canonicalPath.startsWith(dir.canonicalPath + File.separator)) return@withContext false
+            val removed = target.isFile && target.delete()
+            // 顺带清掉因此变空的子目录
+            var parent = target.parentFile
+            while (parent != null && parent.absolutePath.length > dir.absolutePath.length) {
+                val siblings = parent.listFiles()
+                if (siblings.isNullOrEmpty()) {
+                    parent.delete()
+                    parent = parent.parentFile
+                } else break
+            }
+            removed
+        }
+
+    /** 站点内全文搜索：匹配文件名或 HTML 文本，返回（相对路径，命中片段） */
+    suspend fun searchHtml(siteId: String, query: String, limit: Int = 60): List<Pair<String, String>> =
+        withContext(Dispatchers.IO) {
+            val keyword = query.trim()
+            if (keyword.isBlank()) return@withContext emptyList()
+            val dir = siteDir(siteId)
+            val lower = keyword.lowercase()
+            val hits = mutableListOf<Pair<String, String>>()
+            dir.walkTopDown()
+                .filter { it.isFile && it.extension.lowercase() in setOf("html", "htm", "xhtml", "txt", "md", "json", "js", "css") }
+                .forEach { file ->
+                    if (hits.size >= limit) return@forEach
+                    val nameHit = file.name.contains(keyword, ignoreCase = true)
+                    var snippet = ""
+                    if (!nameHit) {
+                        snippet = runCatching {
+                            val text = if (file.length() > 2L * 1024 * 1024) ""
+                            else file.readText(Charsets.UTF_8)
+                            if (text.isBlank()) "" else {
+                                val index = text.lowercase().indexOf(lower)
+                                if (index < 0) "" else {
+                                    val start = (index - 30).coerceAtLeast(0)
+                                    val end = (index + keyword.length + 50).coerceAtMost(text.length)
+                                    text.substring(start, end)
+                                        .replace(Regex("<[^>]+>"), " ")
+                                        .replace(Regex("\\s+"), " ")
+                                        .trim()
+                                }
+                            }
+                        }.getOrDefault("")
+                    }
+                    if (nameHit || snippet.isNotBlank()) {
+                        val relative = file.relativeTo(dir).path.replace(File.separatorChar, '/')
+                        hits.add(relative to snippet)
+                    }
+                }
+            hits
+        }
+
     fun directorySize(siteId: String): Long = siteDir(siteId).walkTopDown().filter { it.isFile }.sumOf { it.length() }
 
     private fun copyDocument(doc: DocumentFile, dest: File) {

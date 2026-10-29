@@ -157,6 +157,7 @@ fun OverlayPageHost(
                 OverlayPage.SETTINGS -> SettingsPage(controller)
                 OverlayPage.PERMISSION_CENTER -> PermissionCenterPage(controller)
                 OverlayPage.AUDIT_LOG -> AuditLogPage()
+                OverlayPage.PAGE_DIAGNOSTICS -> PageDiagnosticsPage(controller)
             }
         }
     }
@@ -1514,6 +1515,29 @@ private fun DownloadsPage(controller: BrowserController) {
     var failedHint by remember { mutableStateOf<com.qingguang.browser.data.DownloadRecord?>(null) }
     var confirmClearFinished by remember { mutableStateOf(false) }
     var subDir by remember { mutableStateOf(app.settings.downloadSubDir) }
+    // 多选删除：进入选择模式后点按行勾选，统一删除
+    var selectionMode by remember { mutableStateOf(false) }
+    val selectedIds = remember { androidx.compose.runtime.mutableStateListOf<Long>() }
+    var typeFilter by remember { mutableStateOf("全部") }
+
+    fun categoryOf(record: com.qingguang.browser.data.DownloadRecord): String {
+        val ext = record.fileName.substringAfterLast('.', "").lowercase()
+        val mime = record.mimeType.lowercase()
+        return when {
+            ext in setOf("pdf", "doc", "docx", "txt", "md", "epub", "xls", "xlsx", "ppt", "pptx", "csv") ||
+                mime.startsWith("text/") -> "文档"
+            ext in setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "svg") ||
+                mime.startsWith("image/") -> "图片"
+            ext in setOf("mp3", "wav", "m4a", "aac", "ogg", "flac", "mp4", "mkv", "webm", "mov", "3gp", "avi") ||
+                mime.startsWith("audio/") || mime.startsWith("video/") -> "音视频"
+            ext in setOf("zip", "rar", "7z", "tar", "gz", "apk") -> "压缩包"
+            else -> "其他"
+        }
+    }
+
+    val visible = remember(downloads, typeFilter) {
+        if (typeFilter == "全部") downloads else downloads.filter { categoryOf(it) == typeFilter }
+    }
 
     // 轮询系统下载管理器，刷新进度与状态
     LaunchedEffect(downloads) {
@@ -1564,7 +1588,8 @@ private fun DownloadsPage(controller: BrowserController) {
             setDataAndType(uri, mime)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        runCatching { context.startActivity(intent) }
+        // 让用户自选打开方式（浏览器 / 阅读器 / 播放器 / 文件管理器）
+        runCatching { context.startActivity(Intent.createChooser(intent, "选择打开方式")) }
             .onFailure { Toast.makeText(context, "没有可打开该文件的应用", Toast.LENGTH_SHORT).show() }
     }
 
@@ -1592,6 +1617,49 @@ private fun DownloadsPage(controller: BrowserController) {
                     Text("清除已完成", fontSize = 12.sp)
                 }
             }
+            TextButton(onClick = {
+                selectionMode = !selectionMode
+                if (!selectionMode) selectedIds.clear()
+            }) { Text(if (selectionMode) "完成" else "选择", fontSize = 12.sp) }
+        }
+        if (selectionMode) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "已选 ${selectedIds.size} 项",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = {
+                    if (selectedIds.size == visible.size) selectedIds.clear()
+                    else {
+                        selectedIds.clear()
+                        selectedIds.addAll(visible.map { it.id })
+                    }
+                }) { Text(if (selectedIds.size == visible.size) "取消全选" else "全选", fontSize = 12.sp) }
+                TextButton(
+                    enabled = selectedIds.isNotEmpty(),
+                    onClick = {
+                        val ids = selectedIds.toList()
+                        ids.forEach { id ->
+                            val record = downloads.firstOrNull { it.id == id } ?: return@forEach
+                            if (record.managerId > 0 && record.status != "下载完成") {
+                                runCatching { manager.remove(record.managerId) }
+                            }
+                            scope.launch { app.database.downloadDao().delete(id) }
+                        }
+                        selectedIds.clear()
+                        selectionMode = false
+                        Toast.makeText(context, "已删除 ${ids.size} 条记录", Toast.LENGTH_SHORT)
+                            .show()
+                    }
+                ) { Text("删除所选", fontSize = 12.sp) }
+            }
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Text(
@@ -1600,11 +1668,29 @@ private fun DownloadsPage(controller: BrowserController) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
         )
-        if (downloads.isEmpty()) {
-            EmptyHint("还没有下载记录。")
+        // 按类型筛选：文档 / 图片 / 音视频 / 压缩包 / 其他
+        if (downloads.isNotEmpty()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf("全部", "文档", "图片", "音视频", "压缩包", "其他").forEach { label ->
+                    FilterChip(
+                        selected = typeFilter == label,
+                        onClick = { typeFilter = label },
+                        label = { Text(label, fontSize = 11.sp) }
+                    )
+                }
+            }
+        }
+        if (visible.isEmpty()) {
+            EmptyHint(if (downloads.isEmpty()) "还没有下载记录。" else "当前分类下没有下载记录。")
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
-                items(downloads, key = { it.id }) { record ->
+                items(visible, key = { it.id }) { record ->
                     val progress = progressMap[record.id]
                     val running = progress?.status == DownloadManager.STATUS_RUNNING
                     val paused = progress?.status == DownloadManager.STATUS_PAUSED
@@ -1614,6 +1700,17 @@ private fun DownloadsPage(controller: BrowserController) {
                     val bytes = progress?.bytes ?: if (finished) total else 0L
                     Column(Modifier.fillMaxWidth()) {
                         ListItem(
+                            leadingContent = if (selectionMode) {
+                                {
+                                    androidx.compose.material3.Checkbox(
+                                        checked = selectedIds.contains(record.id),
+                                        onCheckedChange = { checked ->
+                                            if (checked) selectedIds.add(record.id)
+                                            else selectedIds.remove(record.id)
+                                        }
+                                    )
+                                }
+                            } else null,
                             headlineContent = {
                                 Text(record.fileName, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             },
@@ -1714,7 +1811,10 @@ private fun DownloadsPage(controller: BrowserController) {
                                 }
                             },
                             modifier = Modifier.clickable {
-                                when {
+                                if (selectionMode) {
+                                    if (selectedIds.contains(record.id)) selectedIds.remove(record.id)
+                                    else selectedIds.add(record.id)
+                                } else when {
                                     finished || record.localUri != null -> openRecord(record)
                                     failed -> failedHint = record
                                 }
@@ -2736,6 +2836,19 @@ private fun PermissionCenterPage(controller: BrowserController) {
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            if (permission.expiresAt > 0) {
+                                Text(
+                                    if (permission.isExpired()) "已过期（当前按默认策略）"
+                                    else "有效期至 " + SimpleDateFormat(
+                                        "yyyy-MM-dd HH:mm",
+                                        Locale.getDefault()
+                                    ).format(Date(permission.expiresAt)),
+                                    fontSize = 11.sp,
+                                    color = if (permission.isExpired())
+                                        MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.secondary
+                                )
+                            }
                         }
                         TextButton(onClick = {
                             val before = SitePermissionStore.load(app.settings)
@@ -2854,6 +2967,49 @@ private fun PermissionCenterPage(controller: BrowserController) {
                         draft = draft.copy(allowImages = it)
                     }
                     Text(
+                        "授权有效期",
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                    val dayMs = 24L * 60 * 60 * 1000
+                    val validityOptions = listOf(
+                        0L to "永久",
+                        7L * dayMs to "7 天",
+                        30L * dayMs to "30 天"
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        validityOptions.forEach { (duration, label) ->
+                            val selected = if (duration == 0L) {
+                                draft.expiresAt == 0L
+                            } else {
+                                draft.expiresAt > System.currentTimeMillis() &&
+                                    draft.expiresAt - System.currentTimeMillis() <= duration + dayMs
+                            }
+                            FilterChip(
+                                selected = selected,
+                                onClick = {
+                                    draft = draft.copy(
+                                        expiresAt = if (duration == 0L) 0L
+                                        else System.currentTimeMillis() + duration
+                                    )
+                                },
+                                label = { Text(label, fontSize = 11.sp) }
+                            )
+                        }
+                    }
+                    Text(
+                        when {
+                            draft.expiresAt == 0L -> "永久生效，直到手动移除或恢复默认"
+                            draft.isExpired() -> "已过期：该站点已回退为默认策略，保存后会重新生效"
+                            else -> "有效期至 " +
+                                SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                                    .format(Date(draft.expiresAt)) +
+                                "，到期自动回退为默认策略"
+                        },
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
                         "夜间网页调色",
                         fontSize = 14.sp,
                         modifier = Modifier.padding(top = 8.dp)
@@ -2928,6 +3084,206 @@ private fun PermissionSwitch(label: String, checked: Boolean, onChange: (Boolean
     }
 }
 
+/**
+ * 页面诊断：把页面脚本报错、资源加载失败、本地存储键都摊开在应用里，
+ * 用户不需要会抓 logcat 也能定位「点了没反应」是哪一步断的。
+ */
+@Composable
+private fun PageDiagnosticsPage(controller: BrowserController) {
+    val context = LocalContext.current
+    var keys by remember { mutableStateOf<List<Pair<String, Int>>>(emptyList()) }
+    var refreshKey by remember { mutableStateOf(0) }
+    var pendingDelete by remember { mutableStateOf<String?>(null) }
+    var confirmRepair by remember { mutableStateOf(false) }
+
+    LaunchedEffect(refreshKey) {
+        controller.readLocalStorage { raw ->
+            keys = runCatching {
+                val array = org.json.JSONArray(raw)
+                (0 until array.length()).mapNotNull { index ->
+                    val item = array.optJSONArray(index) ?: return@mapNotNull null
+                    val key = item.optString(0)
+                    if (key.isBlank()) null else key to item.optInt(1)
+                }
+            }.getOrDefault(emptyList())
+        }
+    }
+
+    val logs = controller.diagnostics
+    Column(Modifier.fillMaxSize()) {
+        Text(
+            if (controller.currentUrl.isBlank()) "当前没有打开网页"
+            else "当前页面：${controller.currentUrl}",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "页面错误 ${logs.size} 条",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = {
+                val text = logs.joinToString("\n")
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                    as android.content.ClipboardManager
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("页面诊断", text))
+                Toast.makeText(context, "已复制诊断信息", Toast.LENGTH_SHORT).show()
+            }) { Text("复制", fontSize = 12.sp) }
+            TextButton(onClick = { controller.clearDiagnostics() }) {
+                Text("清空", fontSize = 12.sp)
+            }
+            TextButton(onClick = { controller.reload() }) { Text("重新加载", fontSize = 12.sp) }
+            TextButton(onClick = { confirmRepair = true }) { Text("修复异常值", fontSize = 12.sp) }
+        }
+        if (logs.isEmpty()) {
+            Text(
+                "暂无脚本错误或加载失败。若某个按钮点了没反应，先点一次那个按钮，再回到这里查看。",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp)
+            )
+        } else {
+            LazyColumn(Modifier.heightIn(max = 260.dp)) {
+                items(logs) { line ->
+                    Text(
+                        line,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)
+                    )
+                }
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("站点本地存储", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                Text(
+                    "网页的数据大多保存在这里。只删除出错的那个键，不会影响其他数据。",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            TextButton(onClick = { refreshKey++ }) { Text("刷新", fontSize = 12.sp) }
+        }
+        if (keys.isEmpty()) {
+            Text(
+                "没有读取到本地存储键（页面未打开或站点未使用 localStorage）。",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)
+            )
+        } else {
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(keys, key = { it.first }) { (key, size) ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 18.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                key,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                "${BackupManager.formatSize(size.toLong())}（字符数）",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(onClick = { pendingDelete = key }) {
+                            Text("删除", fontSize = 12.sp)
+                        }
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
+        }
+    }
+
+    if (confirmRepair) {
+        AlertDialog(
+            onDismissRequest = { confirmRepair = false },
+            title = { Text("修复异常的本地存储值？") },
+            text = {
+                Text(
+                    "有些网页会把 null / undefined 这类无效值存进本地存储，页面读取时就会报错、" +
+                        "点了没反应。这里只会删除值为 null/undefined/NaN 的键，其他数据不动，然后重新加载页面。",
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmRepair = false
+                    controller.repairCorruptedStorage { count ->
+                        Toast.makeText(
+                            context,
+                            if (count > 0) "已修复 $count 个异常值，正在重新加载" else "没有发现异常值",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        if (count > 0) {
+                            controller.reload()
+                            refreshKey++
+                        }
+                    }
+                }) { Text("修复并重载") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmRepair = false }) { Text("取消") }
+            }
+        )
+    }
+
+    pendingDelete?.let { key ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除这个存储键？") },
+            text = {
+                Column {
+                    Text(key, fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "只会删除这一个键，页面会重新加载。若这是网页的全部数据，相关自定义内容可能丢失。",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val target = key
+                    pendingDelete = null
+                    controller.deleteLocalStorageKey(target) {
+                        refreshKey++
+                    }
+                }) { Text("删除并重载") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+            }
+        )
+    }
+}
+
 /** 操作记录：权限放行/拦截、下载等关键动作的审计流水 */
 @Composable
 private fun AuditLogPage() {
@@ -2954,7 +3310,7 @@ private fun AuditLogPage() {
 
     val filtered = logs.filter { log ->
         val typeOk = when (typeFilter) {
-            "权限" -> log.action in setOf("定位", "摄像头/麦克风", "弹窗", "脚本", "图片")
+            "权限" -> log.action in setOf("权限", "定位", "摄像头/麦克风", "麦克风/摄像头", "弹窗", "脚本", "图片")
             "下载" -> log.action == "下载"
             "站点数据" -> log.action == "站点数据"
             else -> true

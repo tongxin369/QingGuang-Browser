@@ -18,6 +18,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -131,6 +132,7 @@ enum class OverlayPage(val title: String) {
     OFFLINE_PAGES("离线网页"),
     PERMISSION_CENTER("权限中心"),
     AUDIT_LOG("操作记录"),
+    PAGE_DIAGNOSTICS("页面诊断"),
     DATA_BACKUPS("数据备份"),
     SETTINGS("设置")
 }
@@ -687,7 +689,9 @@ private fun TabPanel(
                 it.url.contains(keyword, ignoreCase = true)
         }
     }
-    Box(Modifier.fillMaxSize()) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        // 面板高度由用户设置决定，但不超过可用高度（留出一点顶部空间，保证还能点空白关闭）
+        val panelMax = minOf(tabSettings.tabPanelHeight.dp, maxHeight - 48.dp)
         // 点击面板上方空白处关闭
         Box(
             Modifier
@@ -710,7 +714,7 @@ private fun TabPanel(
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 370.dp)
+                    .heightIn(max = panelMax)
             ) {
                 Row(
                     Modifier
@@ -926,6 +930,7 @@ private fun menuIcon(
     MenuItem.OFFLINE_LIST -> Icons.Filled.FolderOpen
     MenuItem.PERMISSION_CENTER -> Icons.Filled.Lock
     MenuItem.AUDIT_LOG -> Icons.Filled.Description
+    MenuItem.PAGE_DIAGNOSTICS -> Icons.Filled.Code
     MenuItem.SITE_DATA_EXPORT -> Icons.Filled.SaveAlt
     MenuItem.AD_BLOCK -> Icons.Filled.Block
     MenuItem.INCOGNITO -> if (incognito) Icons.Filled.VisibilityOff else Icons.Filled.Visibility
@@ -1004,6 +1009,7 @@ private fun MenuPanel(
             MenuItem.OFFLINE_LIST -> onOpenOverlay(OverlayPage.OFFLINE_PAGES)
             MenuItem.PERMISSION_CENTER -> onOpenOverlay(OverlayPage.PERMISSION_CENTER)
             MenuItem.AUDIT_LOG -> onOpenOverlay(OverlayPage.AUDIT_LOG)
+            MenuItem.PAGE_DIAGNOSTICS -> onOpenOverlay(OverlayPage.PAGE_DIAGNOSTICS)
             MenuItem.SITE_DATA_EXPORT -> controller.exportSiteData()
             MenuItem.AD_BLOCK -> {
                 app.settings.adBlock = !app.settings.adBlock

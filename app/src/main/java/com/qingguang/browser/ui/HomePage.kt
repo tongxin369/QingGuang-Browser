@@ -866,6 +866,43 @@ private fun LocalPagesPage(
     var deleteTarget by remember { mutableStateOf<LocalPage?>(null) }
     var siteQuery by remember { mutableStateOf("") }
     var siteSizes by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    // 站点内搜索与单页删除
+    var fileSearchQuery by remember { mutableStateOf("") }
+    var fileSearchQuerySite by remember { mutableStateOf<String?>(null) }
+    var fileSearchHits by remember { mutableStateOf<List<Pair<String, String>>?>(null) }
+    var fileSearching by remember { mutableStateOf(false) }
+    var fileDeleteTarget by remember { mutableStateOf<Triple<String, String, String>?>(null) }
+
+    fun runSiteSearch(page: LocalPage, keyword: String) {
+        val query = keyword.trim()
+        if (query.isBlank()) {
+            fileSearchHits = emptyList()
+            return
+        }
+        fileSearching = true
+        scope.launch {
+            val hits = withContext(Dispatchers.IO) { app.localSites.searchHtml(page.siteId, query) }
+            fileSearchHits = hits
+            fileSearching = false
+        }
+    }
+
+    fun deleteSingleFile(page: LocalPage, relative: String) {
+        scope.launch {
+            val removed = withContext(Dispatchers.IO) {
+                app.localSites.deleteHtmlFile(page.siteId, relative)
+            }
+            if (removed) {
+                val files = withContext(Dispatchers.IO) { app.localSites.htmlFiles(page) }
+                siteFiles = siteFiles + (page.siteId to files)
+                val size = withContext(Dispatchers.IO) { app.localSites.siteSizeBytes(page.siteId) }
+                siteSizes = siteSizes + (page.siteId to size)
+                toast(context, "已删除该网页文件")
+            } else {
+                toast(context, "删除失败：文件不存在或没有权限")
+            }
+        }
+    }
 
     fun loadSiteFiles(page: LocalPage) {
         scope.launch {
@@ -909,7 +946,7 @@ private fun LocalPagesPage(
                 siteFiles = siteFiles - page.siteId
                 if (treeSiteId == page.siteId) loadSiteFiles(page)
                 toast(context, "已从手机原文件更新：${page.displayName}")
-            }.onFailure { toast(context, "更新失败：${it.message ?: "未知错误"}") }
+            }.onFailure { toast(context, "更新失败：${importErrorText(it)}") }
         }
     }
 
@@ -1039,7 +1076,7 @@ private fun LocalPagesPage(
                     val page = app.localSites.importSingleHtml(uri, name)
                     app.database.localPageDao().upsert(page)
                     openLocalPage(page)
-                }.onFailure { toast(context, it.message ?: "导入失败") }
+                }.onFailure { toast(context, importErrorText(it)) }
             }
         }
     }
@@ -1055,7 +1092,7 @@ private fun LocalPagesPage(
                     val page = app.localSites.importDirectory(uri, name)
                     app.database.localPageDao().upsert(page)
                     showEntryChooser(page)
-                }.onFailure { toast(context, it.message ?: "导入失败") }
+                }.onFailure { toast(context, importErrorText(it)) }
             }
         }
     }
@@ -1071,7 +1108,7 @@ private fun LocalPagesPage(
                     val page = app.localSites.importZip(uri, name)
                     app.database.localPageDao().upsert(page)
                     showEntryChooser(page)
-                }.onFailure { toast(context, it.message ?: "导入失败") }
+                }.onFailure { toast(context, importErrorText(it)) }
             }
         }
     }
@@ -1254,6 +1291,43 @@ private fun LocalPagesPage(
                         }
                     }
                     if (treeSiteId == page.siteId) {
+                        // 站点内全文搜索
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(start = 20.dp, end = 12.dp, bottom = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            BasicTextField(
+                                value = if (fileSearchQuerySite == page.siteId) fileSearchQuery else "",
+                                onValueChange = {
+                                    if (fileSearchQuerySite != page.siteId) {
+                                        fileSearchQuerySite = page.siteId
+                                        fileSearchHits = null
+                                    }
+                                    fileSearchQuery = it
+                                },
+                                singleLine = true,
+                                textStyle = LocalTextStyle.current.copy(fontSize = 12.sp),
+                                decorationBox = { inner ->
+                                    if ((if (fileSearchQuerySite == page.siteId) fileSearchQuery else "").isBlank()) {
+                                        Text(
+                                            "在此站点内搜索网页内容…",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    inner()
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(
+                                enabled = fileSearchQuerySite == page.siteId &&
+                                    fileSearchQuery.isNotBlank() &&
+                                    !fileSearching,
+                                onClick = { runSiteSearch(page, fileSearchQuery) }
+                            ) { Text(if (fileSearching) "搜索中…" else "搜索", fontSize = 12.sp) }
+                        }
                         val files = siteFiles[page.siteId]
                         if (files != null) {
                             val sizeText = siteSizes[page.siteId]?.let { " · ${formatSize(it)}" }.orEmpty()
@@ -1288,7 +1362,10 @@ private fun LocalPagesPage(
                                         expandedDirs + dir
                                     }
                                 },
-                                onOpen = { relative -> openLocalPage(page, relative) }
+                                onOpen = { relative -> openLocalPage(page, relative) },
+                                onDelete = { name, relative ->
+                                    fileDeleteTarget = Triple(page.siteId, relative, name)
+                                }
                             )
                         }
                     }
@@ -1524,6 +1601,102 @@ private fun LocalPagesPage(
             }
         )
     }
+
+    fileDeleteTarget?.let { (siteId, relative, name) ->
+        AlertDialog(
+            onDismissRequest = { fileDeleteTarget = null },
+            title = { Text("删除这个网页？") },
+            text = {
+                Text(
+                    "会从应用内副本删除「$name」，站点里的其他网页不受影响；手机原文件不会被改动。",
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    fileDeleteTarget = null
+                    val page = localPages.firstOrNull { it.siteId == siteId } ?: return@TextButton
+                    deleteSingleFile(page, relative)
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { fileDeleteTarget = null }) { Text("取消") }
+            }
+        )
+    }
+
+    // 站点内搜索结果
+    fileSearchHits?.let { hits ->
+        AlertDialog(
+            onDismissRequest = { fileSearchHits = null },
+            title = { Text("站点内搜索：${hits.size} 个结果") },
+            text = {
+                if (hits.isEmpty()) {
+                    Text("没有找到匹配的网页内容。", fontSize = 13.sp)
+                } else {
+                    Column(
+                        Modifier
+                            .heightIn(max = 420.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        hits.forEach { (path, snippet) ->
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        fileSearchHits = null
+                                        val page = localPages.firstOrNull { it.siteId == treeSiteId }
+                                            ?: return@clickable
+                                        openLocalPage(page, path)
+                                    }
+                                    .padding(vertical = 6.dp)
+                            ) {
+                                Text(
+                                    path,
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (snippet.isNotBlank()) {
+                                    Text(
+                                        "…$snippet…",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { fileSearchHits = null }) { Text("关闭") }
+            }
+        )
+    }
+}
+
+/** 把导入/更新失败的技术错误翻译成用户能看懂的原因 */
+private fun importErrorText(t: Throwable): String {
+    val raw = t.message.orEmpty()
+    return when {
+        t is SecurityException || raw.contains("permission", ignoreCase = true) ||
+            raw.contains("EACCES", ignoreCase = true) ->
+            "没有读取该位置的权限，请在系统选择器里重新授权后再导入"
+        t is java.io.FileNotFoundException || raw.contains("no such file", ignoreCase = true) ||
+            raw.contains("ENOENT", ignoreCase = true) ->
+            "文件已不存在或已被移动，请重新选择原文件/文件夹"
+        raw.contains("ENOSPC", ignoreCase = true) || raw.contains("space", ignoreCase = true) ->
+            "手机存储空间不足，清理出空间后再导入"
+        raw.contains("zip", ignoreCase = true) || t is java.util.zip.ZipException ->
+            "压缩包无法解析，请确认是完好的 zip 文件"
+        raw.isBlank() -> "导入失败（${t.javaClass.simpleName}）"
+        else -> "导入失败：$raw"
+    }
 }
 
 /** 本地站点的目录树节点：只包含 .html 文件，用于按层级选入口 */
@@ -1561,7 +1734,8 @@ private fun LocalTreeRows(
     depth: Int,
     expanded: Set<String>,
     onToggle: (String) -> Unit,
-    onOpen: (String) -> Unit
+    onOpen: (String) -> Unit,
+    onDelete: (String, String) -> Unit = { _, _ -> }
 ) {
     val indent = (depth * 16).dp
     node.dirs.values.forEach { dir ->
@@ -1583,7 +1757,7 @@ private fun LocalTreeRows(
             Text(dir.name, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
         }
         if (open) {
-            LocalTreeRows(dir, depth + 1, expanded, onToggle, onOpen)
+            LocalTreeRows(dir, depth + 1, expanded, onToggle, onOpen, onDelete)
         }
     }
     node.files.forEach { (name, path) ->
@@ -1599,8 +1773,20 @@ private fun LocalTreeRows(
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.primary,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
             )
+            IconButton(
+                onClick = { onDelete(name, path) },
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "删除这个网页",
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
