@@ -208,15 +208,30 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
     val bookmarkListState = androidx.compose.foundation.lazy.rememberLazyListState()
     // 整理模式下的本地顺序（拖动时先改本地顺序，松手后再落库）
     val sortItems = remember { mutableStateListOf<com.qingguang.browser.data.Bookmark>() }
+    // 文件夹单独排序：只在文件夹之间拖动，不跨普通书签
+    val sortFolders = remember { mutableStateListOf<com.qingguang.browser.data.BookmarkFolder>() }
     val reorderState = org.burnoutcrew.reorderable.rememberReorderableLazyListState(
         onMove = { from, to ->
             val fromKey = from.key as? String
             val toKey = to.key as? String
             if (fromKey != null && toKey != null) {
-                val fromIndex = sortItems.indexOfFirst { "b-${it.id}" == fromKey }
-                val toIndex = sortItems.indexOfFirst { "b-${it.id}" == toKey }
-                if (fromIndex >= 0 && toIndex >= 0) {
-                    sortItems.add(toIndex, sortItems.removeAt(fromIndex))
+                when {
+                    // 文件夹只能在文件夹之间移动
+                    fromKey.startsWith("f-") && toKey.startsWith("f-") -> {
+                        val fromIndex = sortFolders.indexOfFirst { "f-${it.id}" == fromKey }
+                        val toIndex = sortFolders.indexOfFirst { "f-${it.id}" == toKey }
+                        if (fromIndex >= 0 && toIndex >= 0) {
+                            sortFolders.add(toIndex, sortFolders.removeAt(fromIndex))
+                        }
+                    }
+                    // 普通书签只能在书签之间移动
+                    fromKey.startsWith("b-") && toKey.startsWith("b-") -> {
+                        val fromIndex = sortItems.indexOfFirst { "b-${it.id}" == fromKey }
+                        val toIndex = sortItems.indexOfFirst { "b-${it.id}" == toKey }
+                        if (fromIndex >= 0 && toIndex >= 0) {
+                            sortItems.add(toIndex, sortItems.removeAt(fromIndex))
+                        }
+                    }
                 }
             }
         }
@@ -326,7 +341,7 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
     BackHandler(enabled = path.isNotEmpty()) { goUp() }
 
     val chain = folderChain(folders, currentId)
-    val subFolders = folders.filter { it.parentId == currentId }.sortedBy { it.createdAt }
+    val subFolders = folders.filter { it.parentId == currentId }
     val itemsHere = bookmarks.filter { it.folderId == currentId }
     val keyword = query.trim()
     val visibleFolders = if (keyword.isEmpty()) subFolders
@@ -336,7 +351,7 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
         it.title.contains(keyword, ignoreCase = true) ||
             it.url.contains(keyword, ignoreCase = true)
     }
-    val shownFolders = if (selecting || sortMode) emptyList() else visibleFolders
+    val shownFolders = if (selecting) emptyList() else visibleFolders
 
     // 整理模式：把当前文件夹的顺序同步到本地列表；松手后按本地顺序落库
     val orderKey = visibleBookmarks.joinToString(",") { it.id.toString() }
@@ -346,6 +361,13 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
             sortItems.addAll(visibleBookmarks)
         }
     }
+    val folderOrderKey = visibleFolders.joinToString(",") { it.id.toString() }
+    LaunchedEffect(sortMode, folderOrderKey) {
+        if (sortMode && reorderState.draggingItemIndex == null) {
+            sortFolders.clear()
+            sortFolders.addAll(visibleFolders)
+        }
+    }
     LaunchedEffect(reorderState.draggingItemIndex) {
         if (sortMode && reorderState.draggingItemIndex == null) {
             // 先拷成不可变快照：写库是挂起操作，期间拖动/重排会修改 sortItems，
@@ -353,6 +375,10 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
             val ids = sortItems.map { it.id }
             ids.forEachIndexed { i, id ->
                 app.database.bookmarkDao().updateSortOrder(id, i + 1)
+            }
+            val folderIds = sortFolders.map { it.id }
+            folderIds.forEachIndexed { i, id ->
+                app.database.bookmarkFolderDao().updateSortOrder(id, i + 1)
             }
         }
     }
@@ -539,13 +565,40 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                     } else Modifier.fillMaxSize(),
                     state = if (sortMode) reorderState.listState else bookmarkListState
                 ) {
-                    items(shownFolders, key = { "f-${it.id}" }) { folder ->
-                        BookmarkFolderRow(
-                            folder = folder,
-                            count = bookmarks.count { it.folderId == folder.id },
-                            onClick = { openFolder(folder.id) },
-                            onLongClick = { folderAction = folder }
-                        )
+                    items(
+                        if (sortMode) sortFolders else shownFolders,
+                        key = { "f-${it.id}" }
+                    ) { folder ->
+                        val rowContent: @Composable (Modifier) -> Unit = { extra ->
+                            BookmarkFolderRow(
+                                folder = folder,
+                                count = bookmarks.count { it.folderId == folder.id },
+                                onClick = { if (!sortMode) openFolder(folder.id) },
+                                onLongClick = { if (!sortMode) folderAction = folder },
+                                trailingHint = if (sortMode) "拖动" else null,
+                                modifier = extra
+                            )
+                        }
+                        if (sortMode) {
+                            ReorderableItem(reorderState, key = "f-${folder.id}") { isDragging ->
+                                Box(
+                                    Modifier.graphicsLayer {
+                                        if (isDragging) {
+                                            scaleX = 1.02f
+                                            scaleY = 1.02f
+                                        }
+                                    }
+                                ) {
+                                    rowContent(
+                                        Modifier
+                                            .background(MaterialTheme.colorScheme.surface)
+                                            .detectReorderAfterLongPress(reorderState)
+                                    )
+                                }
+                            }
+                        } else {
+                            rowContent(Modifier)
+                        }
                     }
                     itemsIndexed(
                         if (sortMode) sortItems else visibleBookmarks,
@@ -636,7 +689,7 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                     selecting = true
                     query = ""
                 },
-                (if (sortMode) "结束拖动排序" else "拖动排序书签") to {
+                (if (sortMode) "结束拖动排序" else "拖动排序（书签 / 文件夹）") to {
                     showMenu = false
                     sortMode = !sortMode
                     selecting = false
@@ -1083,13 +1136,17 @@ private fun BookmarkFolderRow(
     folder: com.qingguang.browser.data.BookmarkFolder,
     count: Int,
     onClick: () -> Unit,
-    onLongClick: () -> Unit
+    onLongClick: () -> Unit,
+    trailingHint: String? = null,
+    modifier: Modifier = Modifier
 ) {
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
-            .pointerInput(folder.id) {
-                detectTapGestures(onTap = { onClick() }, onLongPress = { onLongClick() })
+            .pointerInput(folder.id, trailingHint) {
+                if (trailingHint == null) {
+                    detectTapGestures(onTap = { onClick() }, onLongPress = { onLongClick() })
+                }
             }
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -1110,12 +1167,20 @@ private fun BookmarkFolderRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Icon(
-            Icons.Filled.KeyboardArrowRight,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(18.dp)
-        )
+        if (trailingHint != null) {
+            Text(
+                trailingHint,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            Icon(
+                Icons.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp)
+            )
+        }
     }
 }
 

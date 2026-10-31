@@ -9,7 +9,9 @@ data class BookmarkFolder(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
     val parentId: Long = 0,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    /** 手动拖动排序序号；0 表示尚未排序（按创建时间升序） */
+    val sortOrder: Int = 0
 )
 
 @Entity(tableName = "bookmarks")

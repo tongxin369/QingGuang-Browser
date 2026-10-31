@@ -44,7 +44,7 @@ interface BookmarkDao {
 
 @Dao
 interface BookmarkFolderDao {
-    @Query("SELECT * FROM bookmark_folders ORDER BY createdAt ASC")
+    @Query("SELECT * FROM bookmark_folders ORDER BY CASE WHEN sortOrder = 0 THEN 1 ELSE 0 END, sortOrder ASC, createdAt ASC")
     fun observeAll(): Flow<List<BookmarkFolder>>
 
     @Insert
@@ -55,6 +55,9 @@ interface BookmarkFolderDao {
 
     @Query("UPDATE bookmark_folders SET parentId = :parentId WHERE id = :id")
     suspend fun moveToParent(id: Long, parentId: Long)
+
+    @Query("UPDATE bookmark_folders SET sortOrder = :order WHERE id = :id")
+    suspend fun updateSortOrder(id: Long, order: Int)
 
     @Query("DELETE FROM bookmark_folders WHERE id = :id")
     suspend fun delete(id: Long)
