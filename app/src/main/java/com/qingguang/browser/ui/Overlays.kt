@@ -3065,6 +3065,17 @@ private fun PermissionCenterPage(controller: BrowserController) {
         .collectAsStateWithLifecycle(initialValue = emptyList())
     var showAdd by remember { mutableStateOf(false) }
     var newHost by remember { mutableStateOf("") }
+    // 站点备份保留份数：单独设置与可选站点列表
+    var backupKeepOverrides by remember { mutableStateOf(app.settings.siteBackupKeepOverrides()) }
+    var backupHosts by remember { mutableStateOf(emptyList<String>()) }
+    var showBackupKeep by remember { mutableStateOf(false) }
+    var newKeepHost by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        backupHosts = app.backups.listBackups()
+            .map { it.host.lowercase() }
+            .distinct()
+            .sorted()
+    }
     val currentHost = hostOfText(controller.currentUrl)
     val currentPolicy = remember(refreshKey, currentHost) {
         if (currentHost.isBlank()) null
@@ -3165,6 +3176,29 @@ private fun PermissionCenterPage(controller: BrowserController) {
                     Text("最近操作", fontSize = 13.sp)
                 }
             }
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("站点备份份数", fontSize = 13.sp)
+                Text(
+                    if (currentHost.isBlank()) "为重要站点单独设置备份保留数量"
+                    else "$currentHost：保留 ${app.settings.siteBackupKeepFor(currentHost)} 份",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            OutlinedButton(
+                onClick = { showBackupKeep = true },
+                modifier = Modifier.height(36.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp)
+            ) { Text("设置", fontSize = 13.sp) }
         }
         if (currentHost.isNotBlank()) {
             val sessionGranted = controller.sessionGrantedHosts().contains(currentHost.lowercase())
@@ -3293,6 +3327,127 @@ private fun PermissionCenterPage(controller: BrowserController) {
                 }
             }
         }
+    }
+
+    if (showBackupKeep) {
+        val knownHosts = (backupKeepOverrides.keys + permissions.map { it.host.lowercase() } +
+            backupHosts + listOfNotNull(currentHost.takeIf { it.isNotBlank() }))
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+        AlertDialog(
+            onDismissRequest = { showBackupKeep = false },
+            title = { Text("站点备份份数") },
+            text = {
+                Column {
+                    Text(
+                        "默认每个站点保留 ${app.settings.siteBackupKeepPerHost} 份（可在设置中调整默认值）。重要站点可在此单独设置，备份时按各自份数只保留最新文件。",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    if (knownHosts.isEmpty()) {
+                        Text(
+                            "还没有可配置的站点，请在下方输入域名添加。",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        LazyColumn(Modifier.heightIn(max = 320.dp)) {
+                            items(knownHosts, key = { it }) { host ->
+                                val custom = backupKeepOverrides[host]
+                                val value = custom ?: app.settings.siteBackupKeepPerHost
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            host,
+                                            fontSize = 13.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            if (custom != null) "单独设置：$value 份" else "使用默认：$value 份",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            app.settings.setSiteBackupKeepFor(host, value - 1)
+                                            backupKeepOverrides = app.settings.siteBackupKeepOverrides()
+                                        },
+                                        enabled = value > 1
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.Remove,
+                                            contentDescription = "减少份数",
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                    Text("$value", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                                    IconButton(
+                                        onClick = {
+                                            app.settings.setSiteBackupKeepFor(host, value + 1)
+                                            backupKeepOverrides = app.settings.siteBackupKeepOverrides()
+                                        },
+                                        enabled = value < 50
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.Add,
+                                            contentDescription = "增加份数",
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                    if (custom != null) {
+                                        TextButton(
+                                            onClick = {
+                                                app.settings.setSiteBackupKeepFor(host, null)
+                                                backupKeepOverrides = app.settings.siteBackupKeepOverrides()
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 8.dp)
+                                        ) { Text("默认", fontSize = 12.sp) }
+                                    }
+                                }
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = newKeepHost,
+                            onValueChange = { newKeepHost = it },
+                            singleLine = true,
+                            label = { Text("添加站点域名", fontSize = 12.sp) },
+                            placeholder = { Text("例如 example.com", fontSize = 12.sp) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(onClick = {
+                            if (newKeepHost.isBlank()) {
+                                Toast.makeText(context, "请输入站点域名", Toast.LENGTH_SHORT).show()
+                                return@TextButton
+                            }
+                            app.settings.setSiteBackupKeepFor(
+                                newKeepHost,
+                                app.settings.siteBackupKeepFor(newKeepHost)
+                            )
+                            backupKeepOverrides = app.settings.siteBackupKeepOverrides()
+                            backupHosts = (backupHosts + newKeepHost.trim().lowercase())
+                                .distinct()
+                                .sorted()
+                            newKeepHost = ""
+                        }) { Text("添加") }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showBackupKeep = false }) { Text("完成") }
+            }
+        )
     }
 
     if (showSiteLogs) {
