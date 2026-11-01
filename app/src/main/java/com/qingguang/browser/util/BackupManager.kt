@@ -146,15 +146,14 @@ class BackupManager(
         head.startsWith(BackupCrypto.MAGIC)
     }.getOrDefault(false)
 
-    /** 按站点清理超出保留份数的旧备份，返回删除数量 */
-    fun pruneSiteBackups(keep: Int = settings.siteBackupKeepPerHost): Int =
+    /** 按站点清理超出各自保留份数的旧备份，返回删除数量 */
+    fun pruneSiteBackups(): Int =
         kotlinx.coroutines.runBlocking(Dispatchers.IO) {
             var removed = 0
             listBackups(global = false)
                 .groupBy { it.host }
-                .values
-                .forEach { group ->
-                    group.drop(keep.coerceAtLeast(1)).forEach {
+                .forEach { (host, group) ->
+                    group.drop(settings.siteBackupKeepFor(host).coerceAtLeast(1)).forEach {
                         if (delete(it)) removed++
                     }
                 }
@@ -233,9 +232,9 @@ class BackupManager(
         }
     }
 
-    /** 删除同一站点超出保留份数的旧备份（保留最新 N 份，N 可在设置中调整，默认 1） */
+    /** 删除同一站点超出保留份数的旧备份（份数支持按站点单独设置，默认 1） */
     private fun pruneOld(safeHost: String) {
-        val keep = settings.siteBackupKeepPerHost.coerceAtLeast(1)
+        val keep = settings.siteBackupKeepFor(safeHost).coerceAtLeast(1)
         val root = customRoot()
         if (root != null) {
             root.listFiles()

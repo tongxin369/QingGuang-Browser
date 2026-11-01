@@ -58,6 +58,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -1073,7 +1074,7 @@ private fun DataSettings(controller: BrowserController) {
     SettingsGroup("每个站点备份份数")
     var keep by remember { mutableStateOf(app.settings.siteBackupKeepPerHost) }
     Text(
-        if (keep == 1) "每个站点只保留最新 1 份备份，旧文件自动删除" else "每个站点保留最新 $keep 份备份，超出后自动删除最旧的",
+        if (keep == 1) "默认每个站点只保留最新 1 份备份，旧文件自动删除" else "默认每个站点保留最新 $keep 份备份，超出后自动删除最旧的",
         fontSize = 11.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 18.dp)
@@ -1084,17 +1085,126 @@ private fun DataSettings(controller: BrowserController) {
             keep = it.roundToInt()
             app.settings.siteBackupKeepPerHost = keep
         },
-        valueRange = 1f..20f,
-        steps = 18,
+        valueRange = 1f..50f,
+        steps = 49,
         modifier = Modifier.padding(horizontal = 18.dp)
     )
+
+    var overrides by remember { mutableStateOf(app.settings.siteBackupKeepOverrides()) }
+    var backupHosts by remember { mutableStateOf(emptyList<String>()) }
+    LaunchedEffect(Unit) {
+        backupHosts = app.backups.listBackups()
+            .map { it.host.lowercase() }
+            .distinct()
+            .sorted()
+    }
+    // 正在编辑的站点：null 表示弹窗关闭，空字符串表示新增
+    var keepEditorHost by remember { mutableStateOf<String?>(null) }
+    var keepEditorInput by remember { mutableStateOf("") }
+    var keepEditorValue by remember { mutableStateOf(1) }
+
+    SettingsGroup("站点单独设置")
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    val knownHosts = (overrides.keys + backupHosts).distinct().sorted()
+    if (knownHosts.isEmpty()) {
+        Text(
+            "还没有备份过的站点。可点击下方「添加站点」为指定域名单独设置份数。",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)
+        )
+    }
+    knownHosts.forEach { host ->
+        val custom = overrides[host]
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 18.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(host, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    if (custom != null) "单独设置：保留 $custom 份" else "使用默认：保留 ${app.settings.siteBackupKeepFor(host)} 份",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            TextButton(onClick = {
+                keepEditorHost = host
+                keepEditorInput = host
+                keepEditorValue = app.settings.siteBackupKeepFor(host)
+            }) { Text(if (custom != null) "修改" else "设置") }
+        }
+    }
     Row(Modifier.padding(horizontal = 10.dp)) {
+        TextButton(onClick = {
+            keepEditorHost = ""
+            keepEditorInput = ""
+            keepEditorValue = app.settings.siteBackupKeepPerHost
+        }) { Text("添加站点") }
         TextButton(onClick = {
             scope.launch {
                 val removed = app.backups.pruneSiteBackups()
                 Toast.makeText(context, "已清理 $removed 个旧备份", Toast.LENGTH_SHORT).show()
             }
         }) { Text("立即清理旧备份") }
+    }
+
+    keepEditorHost?.let { editing ->
+        AlertDialog(
+            onDismissRequest = { keepEditorHost = null },
+            title = { Text(if (editing.isBlank()) "添加站点备份份数" else "站点备份份数") },
+            text = {
+                Column {
+                    if (editing.isBlank()) {
+                        OutlinedTextField(
+                            value = keepEditorInput,
+                            onValueChange = { keepEditorInput = it },
+                            singleLine = true,
+                            label = { Text("站点域名", fontSize = 12.sp) },
+                            placeholder = { Text("例如 example.com", fontSize = 12.sp) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(12.dp))
+                    } else {
+                        Text(editing, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    Text("保留最新 $keepEditorValue 份", fontSize = 12.sp)
+                    Slider(
+                        value = keepEditorValue.toFloat(),
+                        onValueChange = { keepEditorValue = it.roundToInt() },
+                        valueRange = 1f..50f,
+                        steps = 49
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (keepEditorInput.isBlank()) {
+                        Toast.makeText(context, "请输入站点域名", Toast.LENGTH_SHORT).show()
+                        return@TextButton
+                    }
+                    app.settings.setSiteBackupKeepFor(keepEditorInput, keepEditorValue)
+                    overrides = app.settings.siteBackupKeepOverrides()
+                    keepEditorHost = null
+                    Toast.makeText(context, "已设置 ${keepEditorInput.trim()} 保留 $keepEditorValue 份", Toast.LENGTH_SHORT).show()
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                Row {
+                    if (editing.isNotBlank()) {
+                        TextButton(onClick = {
+                            app.settings.setSiteBackupKeepFor(editing, null)
+                            overrides = app.settings.siteBackupKeepOverrides()
+                            keepEditorHost = null
+                        }) { Text("恢复默认") }
+                    }
+                    TextButton(onClick = { keepEditorHost = null }) { Text("取消") }
+                }
+            }
+        )
     }
 
     SettingsGroup("操作记录")

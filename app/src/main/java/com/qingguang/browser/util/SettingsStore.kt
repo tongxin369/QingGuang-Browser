@@ -323,8 +323,52 @@ class SettingsStore(context: Context) {
 
     /** 单个站点的备份保留份数（默认只保留最新 1 份，超出后自动删除最旧的） */
     var siteBackupKeepPerHost: Int
-        get() = prefs.getInt(KEY_SITE_BACKUP_KEEP_PER_HOST, 1).coerceIn(1, 20)
-        set(value) = prefs.edit().putInt(KEY_SITE_BACKUP_KEEP_PER_HOST, value.coerceIn(1, 20)).apply()
+        get() = prefs.getInt(KEY_SITE_BACKUP_KEEP_PER_HOST, 1).coerceIn(1, 50)
+        set(value) = prefs.edit().putInt(KEY_SITE_BACKUP_KEEP_PER_HOST, value.coerceIn(1, 50)).apply()
+
+    /** 站点单独的备份保留份数（host -> 份数，JSON 存储） */
+    var siteBackupKeepMapJson: String
+        get() = prefs.getString(KEY_SITE_BACKUP_KEEP_MAP, "").orEmpty()
+        set(value) = prefs.edit().putString(KEY_SITE_BACKUP_KEEP_MAP, value).apply()
+
+    /** 所有单独设置过的站点份数 */
+    fun siteBackupKeepOverrides(): Map<String, Int> {
+        val raw = siteBackupKeepMapJson
+        if (raw.isBlank()) return emptyMap()
+        return runCatching {
+            val json = org.json.JSONObject(raw)
+            json.keys().asSequence().mapNotNull { key ->
+                key.takeIf { it.isNotBlank() }
+                    ?.let { it to json.optInt(it, siteBackupKeepPerHost).coerceIn(1, 50) }
+            }.toMap()
+        }.getOrDefault(emptyMap())
+    }
+
+    /** 某站点实际使用的备份保留份数（未单独设置时用默认值） */
+    fun siteBackupKeepFor(host: String): Int {
+        val key = siteKeepKey(host)
+        if (key.isBlank()) return siteBackupKeepPerHost
+        return siteBackupKeepOverrides()[key] ?: siteBackupKeepPerHost
+    }
+
+    /** 设置某站点单独的备份份数；keep 为 null 时恢复默认 */
+    fun setSiteBackupKeepFor(host: String, keep: Int?) {
+        val key = siteKeepKey(host)
+        if (key.isBlank()) return
+        val map = siteBackupKeepOverrides().toMutableMap()
+        if (keep == null) map.remove(key) else map[key] = keep.coerceIn(1, 50)
+        siteBackupKeepMapJson = if (map.isEmpty()) "" else org.json.JSONObject().apply {
+            map.forEach { (hostKey, value) -> put(hostKey, value) }
+        }.toString()
+    }
+
+    private fun siteKeepKey(host: String): String =
+        host.trim().lowercase()
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .substringBefore("/")
+            .substringBefore("?")
+            .trim()
 
     /** 备份是否加密（站点与全局备份都适用） */
     var backupEncrypt: Boolean
@@ -421,6 +465,7 @@ class SettingsStore(context: Context) {
         private const val KEY_AUDIT_AUTO_CLEAN = "audit_auto_clean"
         private const val KEY_AUDIT_KEEP_DAYS = "audit_keep_days"
         private const val KEY_SITE_BACKUP_KEEP_PER_HOST = "site_backup_keep_per_host"
+        private const val KEY_SITE_BACKUP_KEEP_MAP = "site_backup_keep_map"
         private const val KEY_BACKUP_ENCRYPT = "backup_encrypt"
         private const val KEY_BACKUP_PASSWORD = "backup_password"
         private const val KEY_SITE_SEARCH_HISTORY = "site_search_history"
