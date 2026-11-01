@@ -1070,10 +1070,10 @@ private fun DataSettings(controller: BrowserController) {
         )
     }
 
-    SettingsGroup("备份保留份数")
-    var keep by remember { mutableStateOf(app.settings.siteBackupKeep) }
+    SettingsGroup("每个站点备份份数")
+    var keep by remember { mutableStateOf(app.settings.siteBackupKeepPerHost) }
     Text(
-        "站点备份最多保留 $keep 份，超出后自动删除最旧的",
+        if (keep == 1) "每个站点只保留最新 1 份备份，旧文件自动删除" else "每个站点保留最新 $keep 份备份，超出后自动删除最旧的",
         fontSize = 11.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 18.dp)
@@ -1082,10 +1082,10 @@ private fun DataSettings(controller: BrowserController) {
         value = keep.toFloat(),
         onValueChange = {
             keep = it.roundToInt()
-            app.settings.siteBackupKeep = keep
+            app.settings.siteBackupKeepPerHost = keep
         },
-        valueRange = 1f..30f,
-        steps = 28,
+        valueRange = 1f..20f,
+        steps = 18,
         modifier = Modifier.padding(horizontal = 18.dp)
     )
     Row(Modifier.padding(horizontal = 10.dp)) {

@@ -321,10 +321,10 @@ class SettingsStore(context: Context) {
         get() = prefs.getInt(KEY_AUDIT_KEEP_DAYS, 30).coerceIn(1, 365)
         set(value) = prefs.edit().putInt(KEY_AUDIT_KEEP_DAYS, value.coerceIn(1, 365)).apply()
 
-    /** 站点备份保留份数（超出后自动删除最旧的） */
-    var siteBackupKeep: Int
-        get() = prefs.getInt(KEY_SITE_BACKUP_KEEP, 10).coerceIn(1, 50)
-        set(value) = prefs.edit().putInt(KEY_SITE_BACKUP_KEEP, value.coerceIn(1, 50)).apply()
+    /** 单个站点的备份保留份数（默认只保留最新 1 份，超出后自动删除最旧的） */
+    var siteBackupKeepPerHost: Int
+        get() = prefs.getInt(KEY_SITE_BACKUP_KEEP_PER_HOST, 1).coerceIn(1, 20)
+        set(value) = prefs.edit().putInt(KEY_SITE_BACKUP_KEEP_PER_HOST, value.coerceIn(1, 20)).apply()
 
     /** 备份是否加密（站点与全局备份都适用） */
     var backupEncrypt: Boolean
@@ -420,7 +420,7 @@ class SettingsStore(context: Context) {
         private const val KEY_TAB_GROUP_BY_SITE = "tab_group_by_site"
         private const val KEY_AUDIT_AUTO_CLEAN = "audit_auto_clean"
         private const val KEY_AUDIT_KEEP_DAYS = "audit_keep_days"
-        private const val KEY_SITE_BACKUP_KEEP = "site_backup_keep"
+        private const val KEY_SITE_BACKUP_KEEP_PER_HOST = "site_backup_keep_per_host"
         private const val KEY_BACKUP_ENCRYPT = "backup_encrypt"
         private const val KEY_BACKUP_PASSWORD = "backup_password"
         private const val KEY_SITE_SEARCH_HISTORY = "site_search_history"

@@ -2589,7 +2589,7 @@ private fun SiteBackupSection(controller: BrowserController) {
                     Text("· IndexedDB：库结构（objectStore、keyPath、自增、索引）与全部记录")
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "同一站点只保留最新一份，旧备份自动删除。恢复时会覆盖当前站点对应的 Cookie、localStorage 与 IndexedDB，并刷新页面。",
+                        "同一站点默认只保留最新一份，旧备份自动删除；可在设置中调整每个站点保留的份数。恢复时会覆盖当前站点对应的 Cookie、localStorage 与 IndexedDB，并刷新页面。",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

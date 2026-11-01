@@ -146,13 +146,18 @@ class BackupManager(
         head.startsWith(BackupCrypto.MAGIC)
     }.getOrDefault(false)
 
-    /** 删除超出保留份数的旧站点备份，返回删除数量 */
-    fun pruneSiteBackups(keep: Int = settings.siteBackupKeep): Int =
+    /** 按站点清理超出保留份数的旧备份，返回删除数量 */
+    fun pruneSiteBackups(keep: Int = settings.siteBackupKeepPerHost): Int =
         kotlinx.coroutines.runBlocking(Dispatchers.IO) {
             var removed = 0
-            listBackups(global = false).drop(keep.coerceAtLeast(1)).forEach {
-                if (delete(it)) removed++
-            }
+            listBackups(global = false)
+                .groupBy { it.host }
+                .values
+                .forEach { group ->
+                    group.drop(keep.coerceAtLeast(1)).forEach {
+                        if (delete(it)) removed++
+                    }
+                }
             removed
         }
 
@@ -208,8 +213,7 @@ class BackupManager(
                     put("indexedDB", indexedDb)
                 }
                 if (writeText(fileName, payload.toString())) {
-                    pruneOld(safeHost, fileName)
-                    pruneSiteBackups()
+                    pruneOld(safeHost)
                     onResult(
                         true,
                         "已备份 Cookie、localStorage 与 ${indexedDb.length()} 个 IndexedDB 库到 ${locationLabel()}/$fileName"
@@ -229,27 +233,34 @@ class BackupManager(
         }
     }
 
-    /** 删除同一站点的旧备份，只保留最新一份 */
-    private fun pruneOld(safeHost: String, keepName: String) {
+    /** 删除同一站点超出保留份数的旧备份（保留最新 N 份，N 可在设置中调整，默认 1） */
+    private fun pruneOld(safeHost: String) {
+        val keep = settings.siteBackupKeepPerHost.coerceAtLeast(1)
         val root = customRoot()
         if (root != null) {
             root.listFiles()
                 .filter {
                     it.isFile && it.name?.endsWith(".json") == true &&
-                        it.name != keepName &&
                         it.name?.substringBefore("@") == safeHost
                 }
+                .sortedByDescending { backupTime(it.name.orEmpty(), it.lastModified()) }
+                .drop(keep)
                 .forEach { it.delete() }
         } else {
             defaultDir.listFiles()
                 ?.filter {
                     it.isFile && it.name.endsWith(".json") &&
-                        it.nameWithoutExtension.split("@").firstOrNull() == safeHost &&
-                        it.name != keepName
+                        it.nameWithoutExtension.split("@").firstOrNull() == safeHost
                 }
+                ?.sortedByDescending { backupTime(it.name, it.lastModified()) }
+                ?.drop(keep)
                 ?.forEach { it.delete() }
         }
     }
+
+    /** 从文件名解析备份时间（host@时间戳.json），失败时回退到文件修改时间 */
+    private fun backupTime(name: String, fallback: Long): Long =
+        name.removeSuffix(".json").substringAfter("@", "").toLongOrNull() ?: fallback
 
     /** 从备份恢复 Cookie、localStorage 与 IndexedDB。回调在主线程。 */
     fun restore(
