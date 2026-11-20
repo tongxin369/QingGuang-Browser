@@ -612,8 +612,7 @@ class BrowserController(private val activity: Activity) {
                 )
             }
             // 首页覆盖在容器之上，WebView 必须一起隐藏，否则首页背景会透出网页残影
-            tab.webView.visibility =
-                if (tab.showsHome || tab.pendingHistoryClear) View.INVISIBLE else View.VISIBLE
+            tab.webView.visibility = if (tab.showsHome) View.INVISIBLE else View.VISIBLE
         }
         updateTabActiveState()
     }
@@ -630,16 +629,17 @@ class BrowserController(private val activity: Activity) {
         stopReadAloud()
         val tab = currentTab() ?: newTabInternal()
         // 从首页重新打开页面：上一个页面视为已退出，
-        // 先隐藏旧画面避免闪出上一个网页，等新页面绘制完成再清空浏览历史
+        // 旧画面先透明隐藏，等新页面绘制后再清空浏览历史，避免闪出上一个网页
         if (tab.showsHome) {
             tab.pendingHistoryClear = true
-            tab.webView.visibility = View.INVISIBLE
+            tab.webView.alpha = 0f
         }
         tab.showsHome = false
         showHome = false
         applySitePolicy(tab.webView, url)
-        // 从首页进入网页时恢复 WebView 可见（首页显示期间它是隐藏的）
-        if (!tab.pendingHistoryClear) renderContainer()
+        // 首页期间 WebView 被隐藏并暂停（onPause），这里必须恢复可见与运行状态，
+        // 否则 Chromium 一直处于暂停解析/布局状态，页面会一直是空白
+        renderContainer()
         tab.webView.loadUrl(url)
         refresh()
     }
@@ -896,6 +896,7 @@ class BrowserController(private val activity: Activity) {
                             runCatching { view.clearHistory() }
                         }
                     }
+                    view.alpha = 1f
                     view.visibility = View.VISIBLE
                 }
             }
@@ -928,6 +929,7 @@ class BrowserController(private val activity: Activity) {
                         tab.pendingHistoryClear = false
                         runCatching { view.clearHistory() }
                     }
+                    view.alpha = 1f
                     view.visibility = View.VISIBLE
                     injectNightCss(view)
                     view.evaluateJavascript(SPEECH_POLYFILL_JS, null)
@@ -942,6 +944,7 @@ class BrowserController(private val activity: Activity) {
                     runCatching { view.clearHistory() }
                 }
                 if (view === currentTab()?.webView) {
+                    view.alpha = 1f
                     view.visibility = View.VISIBLE
                     progress = 1f
                     recordHistory(view)
