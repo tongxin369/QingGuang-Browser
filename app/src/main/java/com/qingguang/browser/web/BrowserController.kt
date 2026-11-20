@@ -330,22 +330,37 @@ class BrowserController(private val activity: Activity) {
         if (!app.settings.restoreTabs) return null
         val raw = app.settings.lastTabsJson
         if (raw.isBlank()) return null
-        val entries = runCatching {
-            val array = org.json.JSONArray(raw)
-            (0 until array.length()).mapNotNull { index ->
-                val obj = array.optJSONObject(index) ?: return@mapNotNull null
-                val url = obj.optString("url")
-                if (url.isBlank()) null else url to obj.optString("title")
+        // 兼容旧格式（纯数组）与新格式（{tabs, active}）
+        val parsed = runCatching {
+            val trimmed = raw.trim()
+            if (trimmed.startsWith("[")) {
+                val array = org.json.JSONArray(trimmed)
+                (0 until array.length()).mapNotNull { index ->
+                    val obj = array.optJSONObject(index) ?: return@mapNotNull null
+                    val url = obj.optString("url")
+                    if (url.isBlank()) null else url to obj.optString("title")
+                } to 0
+            } else {
+                val root = org.json.JSONObject(trimmed)
+                val array = root.optJSONArray("tabs") ?: org.json.JSONArray()
+                val entries = (0 until array.length()).mapNotNull { index ->
+                    val obj = array.optJSONObject(index) ?: return@mapNotNull null
+                    val url = obj.optString("url")
+                    if (url.isBlank()) null else url to obj.optString("title")
+                }
+                entries to root.optInt("active", 0)
             }
-        }.getOrDefault(emptyList())
+        }.getOrNull() ?: return null
+        val (entries, savedActive) = parsed
         if (entries.isEmpty()) return null
         entries.take(20).forEach { (url, _) ->
             val tab = BrowserTab(UUID.randomUUID().toString(), takePreparedWebView())
             tabs.add(tab)
-            activeIndex = tabs.size - 1
             tab.webView.loadUrl(url)
             tab.showsHome = false
         }
+        // 回到上次正在浏览的标签，而不是固定跳到最后一个
+        activeIndex = savedActive.coerceIn(0, tabs.size - 1)
         showHome = false
         return Unit
     }
@@ -355,19 +370,23 @@ class BrowserController(private val activity: Activity) {
     /** 把当前标签页地址写入设置，下次启动时可恢复 */
     fun persistSession() {
         if (app.settings.incognito) return
+        // 已返回首页的标签、空白标签视为用户已退出观看，不再记忆
+        val visible = tabs.filter { !it.showsHome && !it.webView.url.isNullOrBlank() }
+        val activeId = currentTab()?.id
         val array = org.json.JSONArray()
-        tabs.forEach { tab ->
-            val url = tab.webView.url
-            if (!url.isNullOrBlank()) {
-                array.put(
-                    org.json.JSONObject().apply {
-                        put("url", url)
-                        put("title", tab.webView.title ?: "")
-                    }
-                )
-            }
+        visible.forEach { tab ->
+            array.put(
+                org.json.JSONObject().apply {
+                    put("url", tab.webView.url)
+                    put("title", tab.webView.title ?: "")
+                }
+            )
         }
-        app.settings.lastTabsJson = array.toString()
+        val active = visible.indexOfFirst { it.id == activeId }.coerceAtLeast(0)
+        app.settings.lastTabsJson = org.json.JSONObject().apply {
+            put("active", active)
+            put("tabs", array)
+        }.toString()
     }
 
     fun newTab(): BrowserTab {
@@ -424,6 +443,8 @@ class BrowserController(private val activity: Activity) {
         else showHome = tabs.getOrNull(activeIndex)?.showsHome ?: true
         renderContainer()
         refresh()
+        // 关闭的页面立刻从会话记忆中移除
+        persistSession()
     }
 
     /** 恢复最近关闭的标签页 */
@@ -458,6 +479,7 @@ class BrowserController(private val activity: Activity) {
         renderContainer()
         refresh()
         if (!showHome) tabs[index].webView.let { updatePageTheme(it) }
+        persistSession()
     }
 
     /** 标签拖拽排序：把某个标签移动到目标位置，保持当前激活的标签不变 */
@@ -503,6 +525,8 @@ class BrowserController(private val activity: Activity) {
         pageThemeColor = null
         renderContainer()
         refresh()
+        // 已退出观看的页面不再留在会话记忆里
+        persistSession()
     }
 
     private fun currentTab(): BrowserTab? = tabs.getOrNull(activeIndex)

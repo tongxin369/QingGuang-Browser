@@ -253,6 +253,66 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
             }
         }
     }
+    // 导入查重：有待处理的导入时先询问“跳过重复 / 替换为最新”
+    var pendingImport by remember { mutableStateOf<List<ImportedBookmark>?>(null) }
+    var pendingDuplicates by remember { mutableStateOf(0) }
+
+    suspend fun insertImported(entries: List<ImportedBookmark>, replace: Boolean) {
+        val knowFolders = folders.toMutableList()
+        var created = 0
+        var replaced = 0
+        entries.forEach { entry ->
+            var parentId = 0L
+            entry.folderPath.forEach { name ->
+                val existing = knowFolders.firstOrNull {
+                    it.parentId == parentId && it.name == name
+                }
+                parentId = if (existing != null) {
+                    existing.id
+                } else {
+                    val id = app.database.bookmarkFolderDao().insert(
+                        com.qingguang.browser.data.BookmarkFolder(
+                            name = name,
+                            parentId = parentId
+                        )
+                    )
+                    knowFolders.add(
+                        com.qingguang.browser.data.BookmarkFolder(
+                            id = id, name = name, parentId = parentId
+                        )
+                    )
+                    id
+                }
+            }
+            val folderId = currentId.takeIf { entry.folderPath.isEmpty() } ?: parentId
+            val existing = bookmarks.firstOrNull { it.url.trim() == entry.url.trim() }
+            if (existing != null) {
+                if (replace) {
+                    app.database.bookmarkDao().update(
+                        existing.id,
+                        entry.title.ifBlank { existing.title },
+                        entry.url,
+                        folderId
+                    )
+                    replaced++
+                }
+            } else {
+                app.database.bookmarkDao().insert(
+                    com.qingguang.browser.data.Bookmark(
+                        title = entry.title,
+                        url = entry.url,
+                        folderId = folderId
+                    )
+                )
+                created++
+            }
+        }
+        message = buildString {
+            append("已导入 $created 个书签")
+            if (replaced > 0) append("，替换 $replaced 个重复书签")
+        }
+    }
+
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -267,46 +327,23 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
                     message = "导入失败：无法读取文件"
                     return@launch
                 }
-                val imported = parseBookmarkHtml(text)
-                if (imported.isEmpty()) {
+                val parsed = parseBookmarkHtml(text)
+                if (parsed.isEmpty()) {
                     message = "文件中没有找到书签"
                     return@launch
                 }
-                val knowFolders = folders.toMutableList()
-                var created = 0
-                imported.forEach { entry ->
-                    var parentId = 0L
-                    entry.folderPath.forEach { name ->
-                        val existing = knowFolders.firstOrNull {
-                            it.parentId == parentId && it.name == name
-                        }
-                        parentId = if (existing != null) {
-                            existing.id
-                        } else {
-                            val id = app.database.bookmarkFolderDao().insert(
-                                com.qingguang.browser.data.BookmarkFolder(
-                                    name = name,
-                                    parentId = parentId
-                                )
-                            )
-                            knowFolders.add(
-                                com.qingguang.browser.data.BookmarkFolder(
-                                    id = id, name = name, parentId = parentId
-                                )
-                            )
-                            id
-                        }
-                    }
-                    app.database.bookmarkDao().insert(
-                        com.qingguang.browser.data.Bookmark(
-                            title = entry.title,
-                            url = entry.url,
-                            folderId = currentId.takeIf { entry.folderPath.isEmpty() } ?: parentId
-                        )
-                    )
-                    created++
+                // 同一文件内的重复网址只保留最后一条（视为最新）
+                val imported = parsed.reversed()
+                    .distinctBy { it.url.trim() }
+                    .reversed()
+                val existingUrls = bookmarks.map { it.url.trim() }.toSet()
+                val duplicates = imported.count { it.url.trim() in existingUrls }
+                if (duplicates > 0) {
+                    pendingImport = imported
+                    pendingDuplicates = duplicates
+                } else {
+                    insertImported(imported, replace = false)
                 }
-                message = "已导入 $created 个书签"
             }
         }
     }
@@ -767,6 +804,36 @@ private fun BookmarksPage(controller: BrowserController, onClose: () -> Unit) {
             },
             confirmButton = {
                 TextButton(onClick = { batchMove = false }) { Text("取消") }
+            }
+        )
+    }
+
+    pendingImport?.let { entries ->
+        AlertDialog(
+            onDismissRequest = { pendingImport = null },
+            title = { Text("发现重复书签") },
+            text = {
+                Text(
+                    "文件中 $pendingDuplicates 个书签已存在。可以跳过重复项，或用文件里的最新信息替换已有书签（标题与所在文件夹）。",
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val list = entries
+                    pendingImport = null
+                    scope.launch { insertImported(list, replace = true) }
+                }) { Text("替换为最新") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { pendingImport = null }) { Text("取消") }
+                    TextButton(onClick = {
+                        val list = entries
+                        pendingImport = null
+                        scope.launch { insertImported(list, replace = false) }
+                    }) { Text("跳过重复") }
+                }
             }
         )
     }

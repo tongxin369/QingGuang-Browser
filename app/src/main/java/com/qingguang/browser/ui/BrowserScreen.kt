@@ -728,14 +728,19 @@ private fun TabPanel(
         }
     )
     val dragging = reorderState.draggingItemIndex != null
-    LaunchedEffect(controller.tabList, dragging) {
-        if (!dragging && sortItems.map { it.id } != controller.tabList.map { it.id }) {
+    // 仅在标签列表本身变化时同步；拖拽结束时由下面的 effect 单独落库，避免互相覆盖顺序
+    LaunchedEffect(controller.tabList) {
+        if (reorderState.draggingItemIndex == null &&
+            sortItems.map { it.id } != controller.tabList.map { it.id }
+        ) {
             sortItems.clear()
             sortItems.addAll(controller.tabList)
         }
     }
     LaunchedEffect(dragging) {
-        if (!dragging && sortItems.isNotEmpty()) {
+        if (!dragging && sortItems.isNotEmpty() &&
+            sortItems.map { it.id } != controller.tabList.map { it.id }
+        ) {
             controller.reorderTabs(sortItems.map { it.id })
         }
     }

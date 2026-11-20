@@ -371,8 +371,40 @@ class LocalSiteManager(private val context: Context) {
         return dir.walkTopDown()
             .filter { it.isFile && it.extension.lowercase() in setOf("html", "htm") }
             .map { it.relativeTo(dir).invariantSeparatorsPath }
-            .sortedBy { it.lowercase() }
+            // 按“自然顺序”排序：2.html 排在 10.html 前面，保持网页原有顺序
+            .sortedWith(Comparator { a, b -> naturalCompare(a, b) })
             .toList()
+    }
+
+    /** 数字按数值比较的自然排序（1、2、10 而不是 1、10、2） */
+    private fun naturalCompare(a: String, b: String): Int {
+        var i = 0
+        var j = 0
+        while (i < a.length && j < b.length) {
+            val ca = a[i]
+            val cb = b[j]
+            if (ca.isDigit() && cb.isDigit()) {
+                var endA = i
+                while (endA < a.length && a[endA].isDigit()) endA++
+                var endB = j
+                while (endB < b.length && b[endB].isDigit()) endB++
+                val numA = a.substring(i, endA).trimStart('0')
+                val numB = b.substring(j, endB).trimStart('0')
+                val cmp = when {
+                    numA.length != numB.length -> numA.length - numB.length
+                    else -> numA.compareTo(numB)
+                }
+                if (cmp != 0) return cmp
+                i = endA
+                j = endB
+            } else {
+                val cmp = ca.lowercaseChar().compareTo(cb.lowercaseChar())
+                if (cmp != 0) return cmp
+                i++
+                j++
+            }
+        }
+        return (a.length - i) - (b.length - j)
     }
 
     fun entryUrlFor(page: LocalPage, relativePath: String): String =

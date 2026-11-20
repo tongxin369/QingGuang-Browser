@@ -9,6 +9,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -58,6 +59,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -77,6 +79,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -182,7 +185,11 @@ fun HomePage(
     }
 
     var actionTarget by remember { mutableStateOf<HomeItem?>(null) }
-    var openFolder by remember { mutableStateOf<HomeItem?>(null) }
+    // 分组逐层打开：栈顶为当前分组，点击空白只关闭当前这一层
+    val folderStack = remember { mutableStateListOf<Long>() }
+    // 长按进入多选：批量删除、批量分组
+    var selectMode by remember { mutableStateOf(false) }
+    val selectedIds = remember { mutableStateListOf<Long>() }
     var renameTarget by remember { mutableStateOf<HomeItem?>(null) }
     var renameName by remember { mutableStateOf("") }
     var iconTarget by remember { mutableStateOf<HomeItem?>(null) }
@@ -292,9 +299,20 @@ fun HomePage(
                 val page = pagerPage - 1
                 val pageItems = itemsByPage[page]
                 val openItem: (HomeItem) -> Unit = { item ->
-                    if (item.isFolder) openFolder = item else controller.loadUrl(item.url)
+                    if (item.isFolder) folderStack.add(item.id) else controller.loadUrl(item.url)
                 }
-                val longPress: (HomeItem) -> Unit = { actionTarget = it }
+                val longPress: (HomeItem) -> Unit = { item ->
+                    if (selectMode) {
+                        if (item.id in selectedIds) selectedIds.remove(item.id) else selectedIds.add(item.id)
+                    } else {
+                        selectMode = true
+                        selectedIds.clear()
+                        selectedIds.add(item.id)
+                    }
+                }
+                val toggleSelect: (HomeItem) -> Unit = { item ->
+                    if (item.id in selectedIds) selectedIds.remove(item.id) else selectedIds.add(item.id)
+                }
                 when (page) {
                     0 -> HomeMainPage(
                         controller = controller,
@@ -304,8 +322,10 @@ fun HomePage(
                         allItems = homeItems,
                         autoCompact = autoCompact,
                         onShowHint = { showHint = true },
-                        onOpenItem = openItem,
+                        onOpenItem = { item -> if (selectMode) toggleSelect(item) else openItem(item) },
                         onLongPress = longPress,
+                        selectMode = selectMode,
+                        selectedIds = selectedIds,
                         onMerge = { dragged, target -> mergeItems(dragged, target, 0L, 0) },
                         onMoveToSlot = { item, slot ->
                             scope.launch {
@@ -320,8 +340,10 @@ fun HomePage(
                         allItems = homeItems,
                         autoCompact = autoCompact,
                         onShowHint = { showHint = true },
-                        onOpenItem = openItem,
+                        onOpenItem = { item -> if (selectMode) toggleSelect(item) else openItem(item) },
                         onLongPress = longPress,
+                        selectMode = selectMode,
+                        selectedIds = selectedIds,
                         onMerge = { dragged, target -> mergeItems(dragged, target, 0L, page) },
                         onMoveToSlot = { item, slot ->
                             scope.launch {
@@ -364,6 +386,101 @@ fun HomePage(
                 )
             }
         }
+        if (selectMode) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(start = 16.dp, end = 16.dp, bottom = 30.dp),
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surface,
+                shadowElevation = 8.dp
+            ) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "已选 ${selectedIds.size} 个",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.weight(1f))
+                    TextButton(
+                        onClick = {
+                            if (selectedIds.isEmpty()) {
+                                toast(context, "请先选择图标")
+                                return@TextButton
+                            }
+                            scope.launch {
+                                val dao = app.database.homeItemDao()
+                                val picks = selectedIds.toList()
+                                val all = homeItems
+                                pickWithDescendants(picks, all).forEach { id -> dao.delete(id) }
+                                selectedIds.clear()
+                                selectMode = false
+                                toast(context, "已删除 ${picks.size} 个图标")
+                                resequencePage((pagerState.currentPage - 1).coerceAtLeast(0))
+                            }
+                        }
+                    ) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                    TextButton(
+                        onClick = {
+                            if (selectedIds.size < 2) {
+                                toast(context, "至少选择 2 个图标才能分组")
+                                return@TextButton
+                            }
+                            scope.launch {
+                                val dao = app.database.homeItemDao()
+                                val picks = homeItems.filter { it.id in selectedIds && it.parentId == 0L }
+                                    .sortedWith(compareBy({ it.page }, { it.slot }, { it.sortOrder }))
+                                if (picks.isEmpty()) return@launch
+                                val first = picks.first()
+                                val folderId = dao.insert(
+                                    HomeItem(
+                                        title = "分组",
+                                        isFolder = true,
+                                        parentId = 0L,
+                                        page = first.page,
+                                        slot = if (first.slot < 0) 0 else first.slot,
+                                        sortOrder = first.sortOrder
+                                    )
+                                )
+                                picks.forEachIndexed { index, item ->
+                                    dao.moveToParent(item.id, folderId, index)
+                                }
+                                selectedIds.clear()
+                                selectMode = false
+                                toast(context, "已把 ${picks.size} 个图标合并为分组")
+                                resequencePage(first.page)
+                            }
+                        }
+                    ) { Text("分组") }
+                    if (selectedIds.size == 1) {
+                        TextButton(
+                            onClick = {
+                                val item = homeItems.firstOrNull { it.id == selectedIds.first() }
+                                selectedIds.clear()
+                                selectMode = false
+                                actionTarget = item
+                            }
+                        ) { Text("更多") }
+                    }
+                    TextButton(
+                        onClick = {
+                            selectedIds.clear()
+                            selectMode = false
+                        }
+                    ) { Text("完成") }
+                }
+            }
+        }
+    }
+
+    BackHandler(enabled = selectMode) {
+        selectedIds.clear()
+        selectMode = false
     }
 
     if (showHint) {
@@ -446,7 +563,7 @@ fun HomePage(
                 Column {
                     HomeActionRow("打开") {
                         actionTarget = null
-                        if (item.isFolder) openFolder = item else controller.loadUrl(item.url)
+                        if (item.isFolder) folderStack.add(item.id) else controller.loadUrl(item.url)
                     }
                     HomeActionRow("重命名") {
                         actionTarget = null
@@ -467,13 +584,26 @@ fun HomePage(
                                 val children = homeItems
                                     .filter { it.parentId == item.id }
                                     .sortedBy { it.sortOrder }
-                                var nextSlot = (dao.slotsOnPage(item.page).maxOrNull() ?: -1) + 1
-                                children.forEachIndexed { index, child ->
-                                    dao.moveToParent(child.id, 0L, index)
-                                    dao.place(child.id, item.page, nextSlot++, index)
+                                if (item.parentId != 0L) {
+                                    // 分组内解散：子图标留在原来的父分组里，接在现有图标之后
+                                    val siblings = homeItems.filter {
+                                        it.parentId == item.parentId && it.id != item.id
+                                    }
+                                    var order = (siblings.maxOfOrNull { it.sortOrder } ?: -1) + 1
+                                    children.forEach { child ->
+                                        dao.moveToParent(child.id, item.parentId, order++)
+                                    }
+                                    dao.delete(item.id)
+                                } else {
+                                    var nextSlot = (dao.slotsOnPage(item.page).maxOrNull() ?: -1) + 1
+                                    children.forEachIndexed { index, child ->
+                                        dao.moveToParent(child.id, 0L, index)
+                                        dao.place(child.id, item.page, nextSlot++, index)
+                                    }
+                                    dao.delete(item.id)
+                                    compactPage(item.page)
                                 }
-                                dao.delete(item.id)
-                                compactPage(item.page)
+                                folderStack.remove(item.id)
                             }
                         }
                     } else {
@@ -518,15 +648,21 @@ fun HomePage(
         )
     }
 
+    // 分组逐层打开：只渲染栈顶，点击空白/关闭只退出一层
+    val openFolder = folderStack.lastOrNull()?.let { id -> homeItems.firstOrNull { it.id == id } }
+    LaunchedEffect(homeItems) {
+        folderStack.removeAll { id -> homeItems.none { it.id == id } }
+    }
     openFolder?.let { folder ->
         val children = homeItems.filter { it.parentId == folder.id }.sortedBy { it.sortOrder }
         AlertDialog(
-            onDismissRequest = { openFolder = null },
+            onDismissRequest = {
+                if (folderStack.isNotEmpty()) folderStack.removeAt(folderStack.lastIndex)
+            },
             title = {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.clickable {
-                        openFolder = null
                         renameTarget = folder
                         renameName = folder.title
                     }
@@ -561,13 +697,12 @@ fun HomePage(
                             cells = cells,
                             columns = 3,
                             allItems = homeItems,
+                            bottomAnchored = false,
                             onOpen = { child ->
-                                openFolder = null
-                                if (child.isFolder) openFolder = child
+                                if (child.isFolder) folderStack.add(child.id)
                                 else controller.loadUrl(child.url)
                             },
                             onLongPress = { child ->
-                                openFolder = null
                                 actionTarget = child
                             },
                             onMerge = { dragged, target ->
@@ -593,7 +728,9 @@ fun HomePage(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { openFolder = null }) { Text("关闭") }
+                TextButton(onClick = {
+                    if (folderStack.isNotEmpty()) folderStack.removeAt(folderStack.lastIndex)
+                }) { Text("关闭") }
             }
         )
     }
@@ -658,6 +795,8 @@ private fun HomeMainPage(
     onShowHint: () -> Unit,
     onOpenItem: (HomeItem) -> Unit,
     onLongPress: (HomeItem) -> Unit,
+    selectMode: Boolean = false,
+    selectedIds: List<Long> = emptyList(),
     onMerge: (HomeItem, HomeItem) -> Unit,
     onMoveToSlot: (HomeItem, Int) -> Unit
 ) {
@@ -831,6 +970,8 @@ private fun HomeMainPage(
                     allItems = allItems,
                     onOpen = onOpenItem,
                     onLongPress = onLongPress,
+                    selectMode = selectMode,
+                    selectedIds = selectedIds,
                     onMerge = onMerge,
                     onMoveToSlot = onMoveToSlot,
                     modifier = Modifier.fillMaxWidth().height(gridHeight)
@@ -1045,38 +1186,64 @@ private fun LocalPagesPage(
             var homeAdded = 0
             if (toHome) {
                 val dao = app.database.homeItemDao()
+                // 容量不足时自动扩页：以设置为准，边导入边扩展
+                var pageLimit = app.settings.homePageCount.coerceIn(1, 99)
                 val all = dao.all()
-                val used = (0 until totalPages).associateWith { pg ->
+                val used = (0 until pageLimit).associateWith { pg ->
                     all.filter { it.parentId == 0L && it.page == pg }
                         .map { it.slot }
                         .toMutableSet()
                 }.toMutableMap()
-                files.forEach { relative ->
-                    var targetPage = -1
-                    var targetSlot = -1
-                    for (pg in homeStartPage.coerceIn(0, (totalPages - 1).coerceAtLeast(0)) until totalPages) {
-                        val slot = (0 until homePageCapacity(pg)).firstOrNull {
-                            it !in (used[pg] ?: mutableSetOf())
-                        }
-                        if (slot != null) {
-                            targetPage = pg
-                            targetSlot = slot
-                            break
-                        }
+                // 1）先把文件名映射到空位：按页面“从上到下、从左往右”的真实视觉顺序
+                val targets = mutableListOf<Pair<Int, Int>>()
+                var cursorPage = homeStartPage.coerceIn(0, (pageLimit - 1).coerceAtLeast(0))
+                while (targets.size < files.size) {
+                    if (cursorPage >= pageLimit) {
+                        if (pageLimit >= 99) break
+                        pageLimit = cursorPage + 1
+                        app.settings.homePageCount = pageLimit
+                        used[cursorPage] = mutableSetOf()
                     }
-                    if (targetPage >= 0) {
-                        val title = relative.substringAfterLast('/').substringBeforeLast('.')
-                        dao.insert(
-                            HomeItem(
-                                title = title.ifBlank { page.displayName },
-                                url = app.localSites.entryUrlFor(page, relative),
-                                page = targetPage,
-                                slot = targetSlot
-                            )
+                    val occupied = used[cursorPage] ?: mutableSetOf()
+                    val free = (0 until homePageCapacity(cursorPage))
+                        .filter { it !in occupied }
+                        .sortedWith(
+                            compareByDescending<Int> { it / HOME_COLUMNS }
+                                .thenBy { it % HOME_COLUMNS }
                         )
-                        used[targetPage]?.add(targetSlot)
-                        homeAdded++
+                    free.forEach { targets.add(cursorPage to it) }
+                    cursorPage++
+                }
+                if (targets.size > files.size) {
+                    targets.subList(files.size, targets.size).clear()
+                }
+                // 2）按行反序插入：首页贴底排布，先插入的行落在下方，最终视觉上仍是“从上到下”
+                val assignments = files.mapIndexed { index, relative ->
+                    Triple(relative, targets[index].first, targets[index].second)
+                }
+                val insertionOrder = assignments.groupBy { it.second }.values.flatMap { list ->
+                    val head = if (list.size % HOME_COLUMNS == 0) HOME_COLUMNS else list.size % HOME_COLUMNS
+                    val rows = mutableListOf<List<Triple<String, Int, Int>>>()
+                    rows.add(list.take(head))
+                    var index = head
+                    while (index < list.size) {
+                        rows.add(list.subList(index, minOf(index + HOME_COLUMNS, list.size)))
+                        index += HOME_COLUMNS
                     }
+                    rows.reversed().flatten()
+                }
+                insertionOrder.forEach { (relative, targetPage, targetSlot) ->
+                    val title = relative.substringAfterLast('/').substringBeforeLast('.')
+                    dao.insert(
+                        HomeItem(
+                            title = title.ifBlank { page.displayName },
+                            url = app.localSites.entryUrlFor(page, relative),
+                            page = targetPage,
+                            slot = targetSlot
+                        )
+                    )
+                    used[targetPage]?.add(targetSlot)
+                    homeAdded++
                 }
             }
             val msg = buildString {
@@ -2172,6 +2339,8 @@ private fun HomeExtraPage(
     onShowHint: () -> Unit,
     onOpenItem: (HomeItem) -> Unit,
     onLongPress: (HomeItem) -> Unit,
+    selectMode: Boolean = false,
+    selectedIds: List<Long> = emptyList(),
     onMerge: (HomeItem, HomeItem) -> Unit,
     onMoveToSlot: (HomeItem, Int) -> Unit
 ) {
@@ -2198,6 +2367,8 @@ private fun HomeExtraPage(
             allItems = allItems,
             onOpen = onOpenItem,
             onLongPress = onLongPress,
+            selectMode = selectMode,
+            selectedIds = selectedIds,
             onMerge = onMerge,
             onMoveToSlot = onMoveToSlot,
             modifier = Modifier
@@ -2248,6 +2419,19 @@ private fun ShortcutHeader(
             }
         }
     }
+}
+
+/** 收集所选图标及其所有子图标 id（删除分组时一并删除内部图标） */
+private fun pickWithDescendants(ids: List<Long>, all: List<HomeItem>): List<Long> {
+    val result = mutableListOf<Long>()
+    val queue = ArrayDeque(ids)
+    while (queue.isNotEmpty()) {
+        val id = queue.removeFirst()
+        if (id in result) continue
+        result.add(id)
+        all.filter { it.parentId == id }.forEach { queue.add(it.id) }
+    }
+    return result
 }
 
 /** 把图标排进 4 列的格子；自动补位时顺序挤拢，否则按已保存的格子位置摆放 */
@@ -2335,6 +2519,10 @@ private fun HomeShortcutGrid(
     onLongPress: (HomeItem) -> Unit,
     onMerge: (HomeItem, HomeItem) -> Unit,
     onMoveToSlot: (HomeItem, Int) -> Unit,
+    selectMode: Boolean = false,
+    selectedIds: List<Long> = emptyList(),
+    /** true：贴底排列（首页）；false：从上往下排列（分组弹窗内） */
+    bottomAnchored: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     var gridSize by remember { mutableStateOf(IntSize.Zero) }
@@ -2361,13 +2549,17 @@ private fun HomeShortcutGrid(
             rowPx * rows
         }
         // 预备格整体贴底：最底行与页面指示器保持固定间距；多出来的行向上延伸
-        val contentTopPx = (gridHeightPx - rowPx * rows).coerceAtLeast(0f)
+        val contentTopPx = if (bottomAnchored) {
+            (gridHeightPx - rowPx * rows).coerceAtLeast(0f)
+        } else {
+            0f
+        }
 
         Box(
             Modifier
                 .fillMaxSize()
                 .clipToBounds()
-                .pointerInput(cells, columns, rows, rowPx, contentTopPx) {
+                .pointerInput(cells, columns, rows, rowPx, contentTopPx, bottomAnchored) {
                     fun slotAt(pos: Offset): Int {
                         if (gridSize.width <= 0) return -1
                         val cellWidth = (gridSize.width - gapPx * (columns - 1)) / columns
@@ -2375,8 +2567,8 @@ private fun HomeShortcutGrid(
                         val column = (pos.x / (cellWidth + gapPx)).toInt().coerceIn(0, columns - 1)
                         val rowFromTop = ((pos.y - contentTopPx) / rowPx).toInt()
                         if (rowFromTop < 0 || rowFromTop >= rows) return -1
-                        // 格子从底部开始编号：slot 0 是最底行最左格
-                        val slotRow = rows - 1 - rowFromTop
+                        // 首页从底部开始编号：slot 0 是最底行最左格；分组弹窗按从上到下编号
+                        val slotRow = if (bottomAnchored) rows - 1 - rowFromTop else rowFromTop
                         val index = slotRow * columns + column
                         return if (index in cells.indices) index else -1
                     }
@@ -2429,12 +2621,13 @@ private fun HomeShortcutGrid(
         ) {
             Column(
                 Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.Bottom
+                verticalArrangement = if (bottomAnchored) Arrangement.Bottom else Arrangement.Top
             ) {
-                // 倒序渲染：slot 0 所在行画在最下面，保证各页第一行都贴同一底线
+                // 首页倒序渲染：slot 0 所在行画在最下面；分组弹窗正常从上到下
                 val slices = cells.chunked(columns)
-                slices.reversed().forEachIndexed { displayIndex, rowCells ->
-                    val slotRow = rows - 1 - displayIndex
+                val orderedSlices = if (bottomAnchored) slices.reversed() else slices
+                orderedSlices.forEachIndexed { displayIndex, rowCells ->
+                    val slotRow = if (bottomAnchored) rows - 1 - displayIndex else displayIndex
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -2469,6 +2662,8 @@ private fun HomeShortcutGrid(
                                         },
                                         highlight = !isDragging && hoverIndex == absoluteIndex,
                                         clickEnabled = dragging == null,
+                                        selectMode = selectMode,
+                                        selected = cell.id in selectedIds,
                                         modifier = Modifier
                                             .fillMaxSize()
                                             .offset {
@@ -2571,6 +2766,8 @@ private fun HomeShortcutIcon(
     children: List<HomeItem> = emptyList(),
     highlight: Boolean,
     clickEnabled: Boolean,
+    selectMode: Boolean = false,
+    selected: Boolean = false,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
@@ -2579,32 +2776,66 @@ private fun HomeShortcutIcon(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        if (item.isFolder) {
-            FolderPreview(children = children, highlight = highlight)
-        } else {
-            Box(
-                Modifier
-                    .size(52.dp)
-                    .clip(RoundedCornerShape(17.dp))
-                    .background(
-                        item.iconColor?.let { Color(it) }
-                            ?: siteIconColor(item.title.ifBlank { item.url })
+        Box(contentAlignment = Alignment.Center) {
+            if (item.isFolder) {
+                FolderPreview(children = children, highlight = highlight)
+            } else {
+                Box(
+                    Modifier
+                        .size(52.dp)
+                        .clip(RoundedCornerShape(17.dp))
+                        .background(
+                            item.iconColor?.let { Color(it) }
+                                ?: siteIconColor(item.title.ifBlank { item.url })
+                        )
+                        .then(
+                            if (highlight || (selectMode && selected)) {
+                                Modifier.border(
+                                    2.dp,
+                                    MaterialTheme.colorScheme.secondary,
+                                    RoundedCornerShape(17.dp)
+                                )
+                            } else {
+                                Modifier
+                            }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        item.iconText?.trim()?.take(2)?.takeIf { it.isNotBlank() }
+                            ?: siteIconText(item.title, item.url),
+                        fontSize = 20.sp,
+                        color = Color.White
                     )
-                    .then(
-                        if (highlight) {
-                            Modifier.border(2.dp, MaterialTheme.colorScheme.secondary, RoundedCornerShape(17.dp))
-                        } else {
-                            Modifier
-                        }
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    item.iconText?.trim()?.take(2)?.takeIf { it.isNotBlank() }
-                        ?: siteIconText(item.title, item.url),
-                    fontSize = 20.sp,
-                    color = Color.White
-                )
+                }
+            }
+            if (selectMode) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = 6.dp, y = (-6).dp)
+                        .size(18.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (selected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.surfaceVariant
+                        )
+                        .border(
+                            1.dp,
+                            MaterialTheme.colorScheme.outline,
+                            CircleShape
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (selected) {
+                        Icon(
+                            Icons.Filled.Check,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(12.dp)
+                        )
+                    }
+                }
             }
         }
         Spacer(Modifier.height(6.dp))
