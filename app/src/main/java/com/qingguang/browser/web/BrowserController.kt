@@ -74,6 +74,9 @@ class BrowserTab(val id: String, val webView: WebView) {
 
     /** 该标签当前是否停留在首页（新建标签切走再切回来仍然是首页，而不是空白页） */
     var showsHome: Boolean = true
+
+    /** 从首页重新打开网页时标记：等新页面真正绘制后清空旧页面历史 */
+    var pendingHistoryClear: Boolean = false
 }
 
 /** 长按命中结果，用于网页元素菜单 */
@@ -520,7 +523,11 @@ class BrowserController(private val activity: Activity) {
         stopReadAloud()
         // 返回首页只是切回首页视图，标签页与网页内容都保留（切回该标签即可继续浏览）
         if (tabs.isEmpty()) newTabInternal()
-        currentTab()?.showsHome = true
+        currentTab()?.let { tab ->
+            tab.showsHome = true
+            // 退出观看的页面不再保留导航记忆，下次打开新页面时清空旧历史
+            if (!tab.webView.url.isNullOrBlank()) tab.pendingHistoryClear = true
+        }
         showHome = true
         pageThemeColor = null
         renderContainer()
@@ -605,7 +612,8 @@ class BrowserController(private val activity: Activity) {
                 )
             }
             // 首页覆盖在容器之上，WebView 必须一起隐藏，否则首页背景会透出网页残影
-            tab.webView.visibility = if (tab.showsHome) View.INVISIBLE else View.VISIBLE
+            tab.webView.visibility =
+                if (tab.showsHome || tab.pendingHistoryClear) View.INVISIBLE else View.VISIBLE
         }
         updateTabActiveState()
     }
@@ -621,15 +629,17 @@ class BrowserController(private val activity: Activity) {
     fun loadUrl(url: String) {
         stopReadAloud()
         val tab = currentTab() ?: newTabInternal()
-        // 从首页重新打开页面：上一个页面的历史不再保留，避免“返回”退回到之前打开的网页
+        // 从首页重新打开页面：上一个页面视为已退出，
+        // 先隐藏旧画面避免闪出上一个网页，等新页面绘制完成再清空浏览历史
         if (tab.showsHome) {
-            runCatching { tab.webView.clearHistory() }
+            tab.pendingHistoryClear = true
+            tab.webView.visibility = View.INVISIBLE
         }
         tab.showsHome = false
         showHome = false
         applySitePolicy(tab.webView, url)
         // 从首页进入网页时恢复 WebView 可见（首页显示期间它是隐藏的）
-        renderContainer()
+        if (!tab.pendingHistoryClear) renderContainer()
         tab.webView.loadUrl(url)
         refresh()
     }
@@ -878,6 +888,16 @@ class BrowserController(private val activity: Activity) {
                     "加载失败 ${error.errorCode} ${if (request.isForMainFrame) "主页面" else "子资源"} " +
                         request.url
                 )
+                // 主页面加载失败时也要恢复显示，避免一直停留在隐藏状态
+                if (request.isForMainFrame && view === currentTab()?.webView) {
+                    tabs.firstOrNull { it.webView === view }?.let { tab ->
+                        if (tab.pendingHistoryClear) {
+                            tab.pendingHistoryClear = false
+                            runCatching { view.clearHistory() }
+                        }
+                    }
+                    view.visibility = View.VISIBLE
+                }
             }
 
             override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
@@ -902,6 +922,13 @@ class BrowserController(private val activity: Activity) {
             override fun onPageCommitVisible(view: WebView, url: String?) {
                 // 页面内容即将可见时再注入一次：比 onPageFinished 更早，明显减少暗色延迟
                 if (view === currentTab()?.webView) {
+                    // 从首页新开的页面已能绘制：显示并清掉上一个页面的历史
+                    val tab = tabs.firstOrNull { it.webView === view }
+                    if (tab?.pendingHistoryClear == true) {
+                        tab.pendingHistoryClear = false
+                        runCatching { view.clearHistory() }
+                    }
+                    view.visibility = View.VISIBLE
                     injectNightCss(view)
                     view.evaluateJavascript(SPEECH_POLYFILL_JS, null)
                     view.evaluateJavascript(DETAILS_POLYFILL_JS, null)
@@ -909,7 +936,13 @@ class BrowserController(private val activity: Activity) {
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
+                val owner = tabs.firstOrNull { it.webView === view }
+                if (owner?.pendingHistoryClear == true) {
+                    owner.pendingHistoryClear = false
+                    runCatching { view.clearHistory() }
+                }
                 if (view === currentTab()?.webView) {
+                    view.visibility = View.VISIBLE
                     progress = 1f
                     recordHistory(view)
                     refresh()
