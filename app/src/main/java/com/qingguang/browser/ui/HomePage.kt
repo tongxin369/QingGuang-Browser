@@ -86,6 +86,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -175,7 +176,15 @@ fun HomePage(
     val totalPages = pageCount.coerceIn(1, 99)
     // 第 0 页是“本地网页”页（位于主页左侧），第 1 页是主页，之后是快捷入口页
     val pagerCount = totalPages + 1
-    val pagerState = rememberPagerState(initialPage = 1) { pagerCount }
+    // 返回首页时停留在离开前的那一页，而不是固定回到第一页
+    val pagerState = rememberPagerState(
+        initialPage = controller.homePagerIndex.coerceIn(0, pagerCount - 1)
+    ) { pagerCount }
+    LaunchedEffect(pagerState, pagerCount) {
+        snapshotFlow { pagerState.currentPage }.collect { page ->
+            controller.homePagerIndex = page.coerceIn(0, pagerCount - 1)
+        }
+    }
 
     val homeItems by app.database.homeItemDao()
         .observeAll()

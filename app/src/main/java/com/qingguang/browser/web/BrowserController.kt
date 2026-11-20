@@ -179,6 +179,9 @@ class BrowserController(private val activity: Activity) {
     var showHome by mutableStateOf(true)
         private set
 
+    /** 首页停留的页码（0 为本地网页页，1 为主页，2 起为快捷入口页）；从网页返回首页时回到这一页 */
+    var homePagerIndex = 1
+
     /** 当前网页主题色（ARGB）；null 表示未取到，工具栏使用应用默认配色 */
     var pageThemeColor by mutableStateOf<Int?>(null)
         private set
@@ -563,15 +566,25 @@ class BrowserController(private val activity: Activity) {
     /** 非当前标签暂停网页计时器/动画，降低后台占用；切回时恢复，不影响已打开页面 */
     private fun updateTabActiveState() {
         val now = android.os.SystemClock.uptimeMillis()
+        val frame = container
         tabs.forEachIndexed { index, tab ->
             val active = index == activeIndex && !tab.showsHome
             if (active) {
                 tabHiddenAt.remove(tab.id)
-            } else if (tabHiddenAt[tab.id] == null) {
-                tabHiddenAt[tab.id] = now
-            }
-            runCatching {
-                if (active) tab.webView.onResume() else tab.webView.onPause()
+                runCatching { tab.webView.onResume() }
+            } else {
+                if (tabHiddenAt[tab.id] == null) tabHiddenAt[tab.id] = now
+                if (index == activeIndex && frame != null) {
+                    // 刚从网页返回首页：WebView 的同步暂停会卡住首页首帧，
+                    // 延后一帧再暂停，保证返回首页的过渡流畅
+                    frame.post {
+                        if (tab.showsHome && tab === currentTab()) {
+                            runCatching { tab.webView.onPause() }
+                        }
+                    }
+                } else {
+                    runCatching { tab.webView.onPause() }
+                }
             }
         }
     }
@@ -599,12 +612,19 @@ class BrowserController(private val activity: Activity) {
 
     private fun renderContainer() {
         val frame = container ?: return
-        frame.removeAllViews()
-        currentTab()?.let { tab ->
-            if (tab.webView.parent != frame) {
-                (tab.webView.parent as? ViewGroup)?.removeView(tab.webView)
+        val tab = currentTab()
+        val target = tab?.webView
+        // 只移除其他标签的 WebView；不能把当前 WebView 一并摘下再挂回，
+        // 摘下会销毁它的渲染表面并触发整页重排，返回首页/切标签时出现卡顿
+        for (index in frame.childCount - 1 downTo 0) {
+            val child = frame.getChildAt(index)
+            if (child !== target) frame.removeViewAt(index)
+        }
+        if (tab != null && target != null) {
+            if (target.parent != frame) {
+                (target.parent as? ViewGroup)?.removeView(target)
                 frame.addView(
-                    tab.webView,
+                    target,
                     FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
@@ -612,7 +632,7 @@ class BrowserController(private val activity: Activity) {
                 )
             }
             // 首页覆盖在容器之上，WebView 必须一起隐藏，否则首页背景会透出网页残影
-            tab.webView.visibility = if (tab.showsHome) View.INVISIBLE else View.VISIBLE
+            target.visibility = if (tab.showsHome) View.INVISIBLE else View.VISIBLE
         }
         updateTabActiveState()
     }
