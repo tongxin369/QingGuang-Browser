@@ -621,6 +621,10 @@ class BrowserController(private val activity: Activity) {
     fun loadUrl(url: String) {
         stopReadAloud()
         val tab = currentTab() ?: newTabInternal()
+        // 从首页重新打开页面：上一个页面的历史不再保留，避免“返回”退回到之前打开的网页
+        if (tab.showsHome) {
+            runCatching { tab.webView.clearHistory() }
+        }
         tab.showsHome = false
         showHome = false
         applySitePolicy(tab.webView, url)

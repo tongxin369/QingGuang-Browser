@@ -52,6 +52,7 @@ import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
@@ -190,6 +191,7 @@ fun HomePage(
     // 长按进入多选：批量删除、批量分组
     var selectMode by remember { mutableStateOf(false) }
     val selectedIds = remember { mutableStateListOf<Long>() }
+    var showMove by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<HomeItem?>(null) }
     var renameName by remember { mutableStateOf("") }
     var iconTarget by remember { mutableStateOf<HomeItem?>(null) }
@@ -217,6 +219,48 @@ fun HomePage(
     suspend fun firstEmptySlot(page: Int): Int? {
         val used = app.database.homeItemDao().slotsOnPage(page).toSet()
         return (0 until homePageCapacity(page)).firstOrNull { it !in used }
+    }
+
+    /** 多选移动：把所选图标移到指定页（优先占用靠上的空位） */
+    suspend fun moveSelectedToPage(ids: List<Long>, targetPage: Int) {
+        val dao = app.database.homeItemDao()
+        val items = homeItems.filter { it.id in ids && it.parentId == 0L }
+        if (items.isEmpty()) return
+        val used = dao.slotsOnPage(targetPage).toMutableSet()
+        var moved = 0
+        items.forEach { item ->
+            val slot = (0 until homePageCapacity(targetPage))
+                .filter { it !in used }
+                .sortedWith(
+                    compareByDescending<Int> { it / HOME_COLUMNS }.thenBy { it % HOME_COLUMNS }
+                )
+                .firstOrNull()
+            if (slot != null) {
+                dao.place(item.id, targetPage, slot, item.sortOrder)
+                used.add(slot)
+                moved++
+            }
+        }
+        selectedIds.clear()
+        selectMode = false
+        toast(
+            context,
+            if (moved < items.size) "已移动 $moved 个，目标页空间不足" else "已移动到第 ${targetPage + 1} 页"
+        )
+    }
+
+    /** 多选移动：把所选图标移入指定分组 */
+    suspend fun moveSelectedToFolder(ids: List<Long>, folderId: Long) {
+        val dao = app.database.homeItemDao()
+        val items = homeItems.filter { it.id in ids && it.parentId == 0L && it.id != folderId }
+        if (items.isEmpty()) return
+        var order = (homeItems.filter { it.parentId == folderId }.maxOfOrNull { it.sortOrder } ?: -1) + 1
+        items.forEach { item ->
+            dao.moveToParent(item.id, folderId, order++)
+        }
+        selectedIds.clear()
+        selectMode = false
+        toast(context, "已把 ${items.size} 个图标移入分组")
     }
 
     // 超出当前页容量的图标顺移到后续页，避免图标“消失”；不会把后续页图标挪回第一页
@@ -457,6 +501,15 @@ fun HomePage(
                             }
                         }
                     ) { Text("分组") }
+                    TextButton(
+                        onClick = {
+                            if (selectedIds.isEmpty()) {
+                                toast(context, "请先选择图标")
+                                return@TextButton
+                            }
+                            showMove = true
+                        }
+                    ) { Text("移动") }
                     if (selectedIds.size == 1) {
                         TextButton(
                             onClick = {
@@ -481,6 +534,78 @@ fun HomePage(
     BackHandler(enabled = selectMode) {
         selectedIds.clear()
         selectMode = false
+    }
+
+    if (showMove) {
+        val folderTargets = homeItems.filter { it.isFolder }.sortedBy { it.title }
+        val pickCount = selectedIds.size
+        AlertDialog(
+            onDismissRequest = { showMove = false },
+            title = { Text("移动所选 $pickCount 个图标") },
+            text = {
+                Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
+                    Text(
+                        "移动到页面",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    (0 until totalPages).forEach { page ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    val ids = selectedIds.toList()
+                                    showMove = false
+                                    scope.launch { moveSelectedToPage(ids, page) }
+                                }
+                                .padding(vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("第 ${page + 1} 页", fontSize = 14.sp)
+                        }
+                    }
+                    if (folderTargets.isNotEmpty()) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        Text(
+                            "移动到分组",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                        folderTargets.forEach { folder ->
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val ids = selectedIds.toList()
+                                        showMove = false
+                                        scope.launch { moveSelectedToFolder(ids, folder.id) }
+                                    }
+                                    .padding(vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Filled.Folder,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    folder.title.ifBlank { "分组" },
+                                    fontSize = 14.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showMove = false }) { Text("取消") }
+            }
+        )
     }
 
     if (showHint) {
