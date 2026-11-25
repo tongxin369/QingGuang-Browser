@@ -243,10 +243,17 @@ fun HomePage(
         compactPage(item.page)
     }
 
-    /** 移出分组：回到分组所在的首页页面（该页已满则顺延），不挤动其他图标 */
+    /** 移出分组：分组中的分组移出后回到上一级分组；一级分组移出后回到分组所在的首页页面 */
     suspend fun moveOutOfFolder(item: HomeItem) {
         val dao = app.database.homeItemDao()
         val folder = homeItems.firstOrNull { it.id == item.parentId }
+        if (folder != null && folder.parentId != 0L) {
+            // 上一级分组：接在该分组现有图标之后，不改变其他图标位置
+            val siblings = homeItems.filter { it.parentId == folder.parentId && it.id != folder.id }
+            val order = (siblings.maxOfOrNull { it.sortOrder } ?: -1) + 1
+            dao.moveToParent(item.id, folder.parentId, order)
+            return
+        }
         var page = (folder?.page ?: item.page).coerceIn(0, totalPages - 1)
         while (page < totalPages - 1 &&
             dao.countRootOnPage(page) >= homePageCapacity(page)
